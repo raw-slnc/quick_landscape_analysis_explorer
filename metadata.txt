@@ -1,0 +1,18 @@
+[general]
+name=Quick Landscape Analysis Explorer
+qgisMinimumVersion=3.34
+qgisMaximumVersion=4.99
+description=Creates portable terrain-analysis packages from a selected area and local or GSI DEM data.
+version=0.0.1
+author=Hideharu Masai
+email=hideharumasai@void.mints.ne.jp
+about=Quick Landscape Analysis Explorer creates hillshade, slope and CS Map terrain layers for a selected polygon or preview extent. The Japan profile accepts a local DEM or retrieves the best available GSI elevation tiles, then saves the DEM, outputs, styles and provenance as one portable ZIP package beside the QGIS project. English user interface with a Japanese language switch. Experimental development version.
+changelog=
+    0.0.1 - Development build with a non-modal bilingual preview, local or GSI DEM input, terrain derivatives, and named portable analysis ZIP packages.
+category=Analysis
+tags=landscape,terrain,watershed,forestry,japan,open data,analysis
+icon=icon.svg
+experimental=True
+deprecated=False
+hasProcessingProvider=no
+server=False
