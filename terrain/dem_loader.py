@@ -199,6 +199,10 @@ class DEMLoader:
             self.data[band.GetMaskBand().ReadAsArray() == 0] = np.nan
         return self
 
+    def close(self):
+        """Release the GDAL dataset (Windows cannot delete an open file)."""
+        self._ds = None
+
     def load(self, path):
         """メタデータとピクセルデータを一括読み込みする（後方互換）。"""
         self.open_metadata(path)

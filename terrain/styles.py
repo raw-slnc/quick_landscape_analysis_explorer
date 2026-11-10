@@ -58,3 +58,79 @@ def write_morizon_slope_qml(path):
 """.format(items=item_xml)
     Path(path).write_text(qml, encoding="utf-8")
     return str(path)
+
+
+def write_catchment_qml(path):
+    """Catchment polygons: no fill, outline as Morizon Next's catchment results.
+
+    Morizon Next (processes/raster_styler/aggregate.py) draws the catchment
+    aggregation polygons with a 0.08 mm dark navy outline.
+    """
+
+    qml = """<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
+<qgis version="3.34" styleCategories="Symbology">
+  <renderer-v2 type="singleSymbol" symbollevels="0" enableorderby="0" forceraster="0">
+    <symbols>
+      <symbol type="fill" name="0" alpha="1" clip_to_extent="1" force_rhr="0">
+        <layer class="SimpleFill" enabled="1" locked="0" pass="0">
+          <Option type="Map">
+            <Option type="QString" name="color" value="0,0,0,0"/>
+            <Option type="QString" name="style" value="no"/>
+            <Option type="QString" name="outline_color" value="31,78,156,255"/>
+            <Option type="QString" name="outline_style" value="solid"/>
+            <Option type="QString" name="outline_width" value="0.08"/>
+            <Option type="QString" name="outline_width_unit" value="MM"/>
+            <Option type="QString" name="joinstyle" value="round"/>
+          </Option>
+        </layer>
+      </symbol>
+    </symbols>
+  </renderer-v2>
+  <blendMode>0</blendMode>
+  <featureBlendMode>0</featureBlendMode>
+  <layerGeometryType>2</layerGeometryType>
+</qgis>
+"""
+    Path(path).write_text(qml, encoding="utf-8")
+    return str(path)
+
+
+def write_contour_qml(path):
+    """Contours styled like the user's GSI basic-map contour layer.
+
+    Same as the project's "等高線-20250701～20261001" style: dark brown,
+    10 m lines (10, 30, 50, ...) very thin, 20 m lines (20, 40, ...) thin,
+    100 m lines thick, each with its own largest visible scale, and the layer
+    drawn at 60 % opacity. Built with the QGIS API and saved by QGIS itself,
+    so the rule-based style is always in a form this QGIS reads back.
+    """
+    from qgis.core import QgsLineSymbol, QgsRuleBasedRenderer, QgsVectorLayer
+    from qgis.PyQt.QtXml import QDomDocument
+
+    layer = QgsVectorLayer("MultiLineString?field=elev:double&field=index:integer", "c", "memory")
+    root = QgsRuleBasedRenderer.Rule(None)
+    # (filter, width mm, label, smallest scale denominator shown)
+    for expression, width, label, max_denominator in (
+        ('"elev" % 20 = 10', "0.03", "10m", 70000),
+        ('"elev" % 20 = 0 AND "elev" % 100 <> 0', "0.1", "20m", 40001),
+        ('"elev" % 100 = 0', "0.23", "100m", 50001),
+    ):
+        symbol = QgsLineSymbol.createSimple({
+            "line_color": "58,28,0,255",
+            "line_width": width,
+            "line_width_unit": "MM",
+            "capstyle": "square",
+            "joinstyle": "bevel",
+        })
+        rule = QgsRuleBasedRenderer.Rule(symbol, filterExp=expression, label=label)
+        # QGIS: "maximum scale" is the most zoomed-in, "minimum" the most
+        # zoomed-out scale at which the rule is drawn.
+        rule.setMinimumScale(max_denominator)
+        rule.setMaximumScale(1)
+        root.appendChild(rule)
+    layer.setRenderer(QgsRuleBasedRenderer(root))
+    layer.setOpacity(0.6)
+    document = QDomDocument()
+    layer.exportNamedStyle(document)
+    Path(path).write_text(document.toString(), encoding="utf-8")
+    return str(path)

@@ -9,6 +9,10 @@ import zipfile
 
 ROOT_FOLDER = "quick_landscape_analysis"
 ANALYSES_FOLDER = "analyses"
+EXPORTS_FOLDER = "exports"
+# Written by the Layers export: what the layer panel menu needs to make the
+# print layout of the exported group (no link to the ZIP is needed).
+LAYOUT_RECORD_NAME = "qlae_layout.json"
 MANIFEST_NAME = "analysis.json"
 
 
@@ -30,6 +34,14 @@ def package_file_name(analysis_name):
     if not safe:
         raise PackageError("analysis_name_required")
     return safe + ".zip"
+
+
+def export_directory(package_path_value):
+    """Where the Layers export writes an analysis: exports/<name>/ beside analyses/."""
+
+    absolute = os.path.abspath(package_path_value)
+    root = os.path.dirname(os.path.dirname(absolute))
+    return os.path.join(root, EXPORTS_FOLDER, os.path.splitext(os.path.basename(absolute))[0])
 
 
 def package_path(project_directory, analysis_name):

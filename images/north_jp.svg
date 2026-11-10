@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 100">
+  <!-- Japanese-style north mark (drawn for this plugin): a vertical line,
+       the flag at the top whose lower stroke slants down across the line,
+       and a short crossbar. -->
+  <g fill="none" stroke="#000" stroke-width="3.2" stroke-linecap="butt" stroke-linejoin="miter">
+    <path d="M30 2 L30 99"/>
+    <path d="M30 2 L9 45 L45 63"/>
+    <path d="M7 78 L48 78"/>
+  </g>
+</svg>

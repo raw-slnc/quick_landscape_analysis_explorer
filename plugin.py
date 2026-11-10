@@ -2,8 +2,12 @@
 
 import os
 
+from qgis.PyQt.QtCore import QTimer
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction
+from qgis.core import QgsProject
+
+from .core import session
 
 from .i18n import tr
 
@@ -21,6 +25,7 @@ class QuickLandscapeAnalysisExplorer:
         self.plugin_dir = os.path.dirname(__file__)
         self.action = None
         self.dialog = None
+        self.group_menu = None
 
     def _action_text(self):
         return tr(PLUGIN_NAME, PLUGIN_NAME + "（景観解析）")
@@ -31,13 +36,33 @@ class QuickLandscapeAnalysisExplorer:
         self.action.triggered.connect(self.run)
         self.iface.addPluginToMenu(self.MENU, self.action)
         self.iface.addToolBarIcon(self.action)
+        # Analysis layers whose ZIP is gone are removed when a project opens.
+        QgsProject.instance().readProject.connect(self._project_read)
+        self._project_read()
+        # Layer panel menu of exported groups (works with the window closed).
+        from .layer_menu import ExportedGroupMenu
+
+        self.group_menu = ExportedGroupMenu(self.iface)
+
+    def _project_read(self, *args):
+        del args
+        # After the project has finished loading.
+        QTimer.singleShot(0, session.remove_layers_without_package)
 
     def unload(self):
         if self.action is not None:
             self.iface.removePluginMenu(self.MENU, self.action)
             self.iface.removeToolBarIcon(self.action)
             self.action = None
-        self._close_dialog(clear_analysis_layers=True)
+        try:
+            QgsProject.instance().readProject.disconnect(self._project_read)
+        except (TypeError, RuntimeError):
+            pass
+        if self.group_menu is not None:
+            self.group_menu.unload()
+            self.group_menu = None
+        # The analysis layers belong to the project now; they stay.
+        self._close_dialog(clear_analysis_layers=False)
 
     def run(self):
         if self.dialog is None:

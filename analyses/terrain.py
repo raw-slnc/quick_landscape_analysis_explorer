@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """DEM acquisition, terrain derivatives, and portable ZIP packaging."""
 
+import contextlib
 import datetime
 import json
 import math
@@ -13,14 +14,16 @@ import zipfile
 import numpy as np
 from osgeo import gdal, ogr, osr
 from qgis.PyQt.QtCore import QThread, pyqtSignal
-from qgis.core import Qgis, QgsMessageLog
+from qgis.core import Qgis, QgsMessageLog, QgsProcessingFeedback
 
 from ..core.packages import MANIFEST_NAME
 from ..terrain.analysis import compute_hillshade, compute_slope_deg
 from ..terrain.cs_map import compute_cs_map
+from ..terrain import dem_sources, nagano_rinmu, nagano_sabo, remote_dem, remote_zip, vs_lp
 from ..terrain.dem_loader import DEMLoader, GSITileDEMLoader, save_as_geotiff
 from ..terrain.result_writer import save_raster, save_rgba_raster
-from ..terrain.styles import write_morizon_slope_qml
+from ..terrain import contours, watershed
+from ..terrain.styles import write_catchment_qml, write_contour_qml, write_morizon_slope_qml
 
 
 class TerrainJobCancelled(Exception):
@@ -39,9 +42,13 @@ class TerrainJobWorker(QThread):
         super().__init__(parent)
         self.specification = dict(specification)
         self._cancelled = False
+        # Processing (GRASS) steps watch this feedback; cancelling the worker
+        # cancels them too.
+        self.processing_feedback = QgsProcessingFeedback()
 
     def cancel(self):
         self._cancelled = True
+        self.processing_feedback.cancel()
 
     def cancelled(self):
         return self._cancelled
@@ -79,7 +86,11 @@ def create_terrain_package(specification, context):
     if os.path.exists(package_path) and not specification.get("overwrite"):
         raise TerrainJobError("package_exists")
 
-    with tempfile.TemporaryDirectory(prefix="qlae_") as temporary:
+    # The DEMs opened below are closed (ExitStack) before the temporary folder
+    # is removed: Windows cannot delete a file GDAL still holds open.
+    with tempfile.TemporaryDirectory(
+        prefix="qlae_", ignore_cleanup_errors=True
+    ) as temporary, contextlib.ExitStack() as opened:
         data_dir = os.path.join(temporary, "data")
         output_dir = os.path.join(temporary, "outputs")
         style_dir = os.path.join(temporary, "styles")
@@ -92,15 +103,19 @@ def create_terrain_package(specification, context):
         aoi = _geometry_from_specification(specification)
         landscape = bool(specification.get("preview_landscape", False))
         acquisition_frame = _a_series_frame(aoi, landscape)
-        if specification["source_kind"] == "gsi":
-            loader, source = _fetch_gsi_loader(
-                specification, acquisition_frame, temporary, context
-            )
-        else:
-            loader, source = _open_local_loader(specification, acquisition_frame)
+        requested = set(specification.get("outputs") or ())
+        if "watershed" in requested:
+            # Catchments need the land outside the view: fetch a wider DEM
+            # and run every analysis on it, then cut to the A-series frame.
+            acquisition_frame = _scaled_frame(acquisition_frame, WATERSHED_WIDEN)
+        loader, source = _acquire_loader(
+            specification, acquisition_frame, temporary, context
+        )
+        opened.callback(loader.close)
 
         context.check()
         prepared = loader.prepare_for_analysis()
+        opened.callback(prepared.close)
         analysis_aoi = _transform_geometry(
             aoi,
             specification["aoi_crs_wkt"],
@@ -118,7 +133,6 @@ def create_terrain_package(specification, context):
         if not np.any(valid_inside):
             raise TerrainJobError("DEM does not contain valid elevations in the analysis area.")
 
-        requested = set(specification.get("outputs") or ())
         hillshade = None
         slope = None
         cs_map = None
@@ -144,6 +158,39 @@ def create_terrain_package(specification, context):
                 cs_map[:, :, 3][~valid_inside] = 0
             else:
                 cs_map[~valid_inside] = 0
+            context.check()
+
+        catchments = None
+        if "watershed" in requested:
+            context.report("Creating catchments...")
+            try:
+                catchments = watershed.compute_catchments(
+                    prepared.data,
+                    prepared.gt,
+                    prepared.crs_wkt,
+                    _window_envelope(prepared, window),
+                    context,
+                    getattr(context, "processing_feedback", None),
+                    prepared.cell_size,
+                )
+            except watershed.WatershedError as error:
+                raise TerrainJobError(str(error))
+            context.check()
+
+        contour_lines = None
+        if "contours" in requested:
+            context.report("Creating contours...")
+            # From the whole acquired DEM, so the blur near the edge of the
+            # analysis area still sees the land around it.
+            contour_lines = contours.compute_contours(
+                prepared.data,
+                prepared.gt,
+                prepared.crs_wkt,
+                prepared.cell_size,
+                analysis_aoi.ExportToWkt(),
+                os.path.join(temporary, "_work"),
+                context,
+            )
             context.check()
 
         context.report("Writing analysis package...")
@@ -184,6 +231,21 @@ def create_terrain_package(specification, context):
             )
             output_members["cs_map"] = "outputs/cs_map.tif"
 
+        if contour_lines is not None:
+            contours.write_contours_gpkg(
+                os.path.join(output_dir, "contours.gpkg"), contour_lines, prepared.crs_wkt
+            )
+            write_contour_qml(os.path.join(style_dir, "contours.qml"))
+            output_members["contours"] = "outputs/contours.gpkg"
+            output_members["contours_style"] = "styles/contours.qml"
+        if catchments is not None:
+            watershed.write_catchments_gpkg(
+                os.path.join(output_dir, "catchments.gpkg"), catchments, prepared.crs_wkt
+            )
+            write_catchment_qml(os.path.join(style_dir, "catchments.qml"))
+            output_members["watershed"] = "outputs/catchments.gpkg"
+            output_members["watershed_style"] = "styles/catchments.qml"
+
         with open(os.path.join(area_dir, "aoi.wkt"), "w", encoding="utf-8") as stream:
             stream.write(specification["aoi_wkt"])
         frame_envelope = _window_envelope(prepared, window)
@@ -205,6 +267,8 @@ def create_terrain_package(specification, context):
                 "crs_wkt": specification["aoi_crs_wkt"],
                 "geometry": "area/aoi.wkt",
             },
+            # Preview view at run time; analysis management shows this view.
+            "preview_view": specification.get("preview_view"),
             "output_frame": {
                 "standard": "ISO 216 A-series aspect ratio",
                 "orientation": "landscape" if landscape else "portrait",
@@ -224,8 +288,23 @@ def create_terrain_package(specification, context):
                 "valid_coverage_percent": round(100.0 * valid_count / inside_count, 3),
             },
             "outputs": output_members,
+            "contours": {
+                "method": contours.METHOD_TEXT,
+                "interval_m": contours.INTERVAL_M,
+                "index_interval_m": contours.INDEX_INTERVAL_M,
+                "lines": len(contour_lines),
+            } if contour_lines is not None else None,
+            "watershed": {
+                "method": watershed.METHOD_TEXT,
+                "cell_size_m": max(watershed.CELL_SIZE_M, float(prepared.cell_size)),
+                "min_area_ha": watershed.MIN_AREA_HA,
+                "acquisition": "A-series frame x{:g} (all analyses on the wider area, "
+                "then cut to the frame)".format(WATERSHED_WIDEN),
+                "catchments": len(catchments),
+                "incomplete": sum(1 for item in catchments if not item["complete"]),
+            } if catchments is not None else None,
             "styles": {
-                "slope": "Morizon Next 災害リスク/傾斜 (non-scoring)"
+                "slope": "degrees, classes of 5 degrees from 20 to 45"
                 if "slope" in requested
                 else None
             },
@@ -267,6 +346,182 @@ def _geometry_from_specification(specification):
     return geometry
 
 
+def _acquire_loader(specification, acquisition_frame, temporary, context):
+    """Open or fetch the DEM chosen in the DEM section."""
+
+    key = specification.get("source_key") or dem_sources.key_from_legacy(
+        specification.get("source_kind"), specification.get("gsi_dataset")
+    )
+    if key == "local":
+        return _open_local_loader(specification, acquisition_frame)
+    if key.startswith("gsi:") or key.startswith("terrarium:"):
+        return _fetch_tile_loader(key, specification, acquisition_frame, temporary, context)
+    work_dir = os.path.join(temporary, "_work")
+    os.makedirs(work_dir, exist_ok=True)
+    try:
+        if key == "vs_lp":
+            return _fetch_vs_loader(specification, acquisition_frame, work_dir, context)
+        if key in ("nagano_sabo", "nagano_rinmu"):
+            return _fetch_nagano_loader(
+                key, specification, acquisition_frame, work_dir, context
+            )
+        if key in remote_dem.REMOTE_SOURCES:
+            return _fetch_remote_loader(
+                key, specification, acquisition_frame, work_dir, context
+            )
+    except remote_dem.RemoteDemError as error:
+        raise TerrainJobError(str(error))
+    except (remote_zip.Cancelled,):
+        raise TerrainJobCancelled()
+    raise TerrainJobError("Unknown DEM source: {}".format(key))
+
+
+def _source_envelope(acquisition_frame, specification, crs_wkt, cell):
+    """Acquisition frame in the source CRS, padded like a local DEM."""
+
+    frame = _transform_geometry(acquisition_frame, specification["aoi_crs_wkt"], crs_wkt)
+    xmin, xmax, ymin, ymax = frame.GetEnvelope()
+    pad_x = max((xmax - xmin) * 0.08, cell * 16.0)
+    pad_y = max((ymax - ymin) * 0.08, cell * 16.0)
+    return xmin - pad_x, ymin - pad_y, xmax + pad_x, ymax + pad_y
+
+
+def _epsg_wkt(epsg):
+    reference = osr.SpatialReference()
+    reference.ImportFromEPSG(epsg)
+    return reference.ExportToWkt()
+
+
+def _clip_fetched(path, acquisition_frame, specification):
+    loader = DEMLoader().open_metadata(path)
+    xmin, ymin, xmax, ymax = _source_envelope(
+        acquisition_frame, specification, loader.crs_wkt, abs(loader.gt[1])
+    )
+    return loader.clip_to_extent(xmin, ymin, xmax, ymax)
+
+
+def _merge_or_single(paths, work_dir, prefix):
+    if len(paths) == 1:
+        return paths[0]
+    merged = os.path.join(work_dir, prefix + "_merged.tif")
+    vs_lp.merge_tifs(paths, merged)
+    return merged
+
+
+def _fetch_vs_loader(specification, acquisition_frame, work_dir, context):
+    """VIRTUAL SHIZUOKA LP/Grid 0.5 m DTM tiles from its S3 bucket."""
+
+    bbox = _source_envelope(acquisition_frame, specification, _epsg_wkt(6676), 0.5)
+    remote_dem.check_size(bbox, 0.5)
+    codes = vs_lp.tiles_for_extent(*bbox)
+    if not codes:
+        raise TerrainJobError("No VIRTUAL SHIZUOKA tiles cover the analysis area.")
+
+    def checking(done, total):
+        context.check()
+        context.report("Checking VIRTUAL SHIZUOKA tiles... {}/{}".format(done, total))
+
+    resolved = vs_lp.resolve_years(codes, progress_cb=checking)
+    if not resolved:
+        raise TerrainJobError("No VIRTUAL SHIZUOKA tiles are available for the analysis area.")
+    paths = []
+    errors = []
+    total = len(resolved)
+    for index, (code, year) in enumerate(sorted(resolved.items()), start=1):
+        context.check()
+        context.report("Downloading VIRTUAL SHIZUOKA tiles... {}/{}".format(index, total))
+        try:
+            paths.append(vs_lp.download_grid_tif(
+                code, year, work_dir, cancel_cb=context.cancelled
+            ))
+        except remote_zip.Cancelled:
+            raise TerrainJobCancelled()
+        except Exception as error:  # one tile failing should not stop the rest
+            errors.append("{}: {}".format(code, error))
+    if not paths:
+        raise TerrainJobError("All tile downloads failed.\n" + "\n".join(errors[:3]))
+    context.check()
+    path = _merge_or_single(paths, work_dir, "vs_grid")
+    years = sorted(set(resolved.values()))
+    return _clip_fetched(path, acquisition_frame, specification), {
+        "kind": "vs_lp",
+        "provider": "Shizuoka Prefecture (VIRTUAL SHIZUOKA)",
+        "dataset": "VS LP/Grid 0.5m DTM",
+        "survey_years": years,
+        "tiles": len(paths),
+        "licence": "CC BY 4.0",
+        "service": vs_lp.BUCKET_URL,
+    }
+
+
+def _fetch_nagano_loader(key, specification, acquisition_frame, work_dir, context):
+    """Nagano Prefecture 0.5 m DEM tiles read partly from their ZIP archives."""
+
+    module = nagano_sabo if key == "nagano_sabo" else nagano_rinmu
+    bbox = _source_envelope(acquisition_frame, specification, _epsg_wkt(6676), 0.5)
+    remote_dem.check_size(bbox, 0.5)
+    codes = module.tiles_for_extent(*bbox)
+    if not codes:
+        raise TerrainJobError("No Nagano Prefecture DEM tiles cover the analysis area.")
+    codes = sorted(codes)
+    paths = []
+    missing = []
+    total = len(codes)
+    for index, code in enumerate(codes, start=1):
+        context.check()
+        prefix = "Nagano DEM tile {}/{} ({})".format(index, total, code)
+
+        def progress(phase, place, detail, prefix=prefix):
+            context.report(
+                "{}: checking {}...".format(prefix, place)
+                if phase == "checking"
+                else "{}: downloading {:.0f}/{:.0f} MB...".format(
+                    prefix, detail[0] / 1e6, detail[1] / 1e6
+                )
+            )
+
+        context.report("{}: locating...".format(prefix))
+        path = module.download_tile_tif(
+            code, work_dir, cancel_cb=context.cancelled, progress_cb=progress
+        )
+        context.check()
+        if path:
+            paths.append(path)
+        else:
+            missing.append(code)
+    if not paths:
+        raise TerrainJobError("No Nagano Prefecture DEM tiles could be fetched for this area.")
+    path = _merge_or_single(paths, work_dir, key)
+    sabo = key == "nagano_sabo"
+    return _clip_fetched(path, acquisition_frame, specification), {
+        "kind": key,
+        "provider": "Nagano Prefecture ({})".format("Sabo Division" if sabo else "Forestry Department"),
+        "dataset": "Nagano {} 0.5m DEM".format("Sabo R3-4" if sabo else "Rinmu"),
+        "tiles": len(paths),
+        "missing_tiles": missing,
+        "service": "https://www.geospatial.jp/ckan/dataset/{}".format(
+            "r3-4-50cmdem" if sabo else "nagano-dem"
+        ),
+    }
+
+
+def _fetch_remote_loader(key, specification, acquisition_frame, work_dir, context):
+    """Overseas DEM (NL AHN4, FR IGN LiDAR HD, NZ LINZ) for the area."""
+
+    spec = remote_dem.REMOTE_SOURCES[key]
+    bbox = _source_envelope(
+        acquisition_frame, specification, _epsg_wkt(spec["epsg"]), spec["cell"]
+    )
+    path = remote_dem.fetch_remote_dem(context, key, bbox, work_dir)
+    return _clip_fetched(path, acquisition_frame, specification), {
+        "kind": key,
+        "provider": spec["provider"],
+        "dataset": spec["label"],
+        "licence": spec["licence"],
+        "service": spec["service"],
+    }
+
+
 def _open_local_loader(specification, acquisition_frame):
     path = specification.get("source_path", "")
     if not path or not os.path.isfile(path):
@@ -288,7 +543,31 @@ def _open_local_loader(specification, acquisition_frame):
     }
 
 
-def _fetch_gsi_loader(specification, acquisition_frame, temporary, context):
+def _fetch_tile_loader(key, specification, acquisition_frame, temporary, context):
+    """GSI (Japan) or AWS Terrarium (global) elevation tiles."""
+
+    kind, _sep, dataset = key.partition(":")
+    if kind == "terrarium":
+        sources = {
+            "2m": GSITileDEMLoader.TERRARIUM_SOURCES[0],
+            "5m": GSITileDEMLoader.TERRARIUM_SOURCES[1],
+            "10m": GSITileDEMLoader.TERRARIUM_SOURCES[2],
+        }
+        if dataset not in sources:
+            raise TerrainJobError("Unknown Terrarium resolution: {}".format(dataset))
+        return _fetch_gsi_loader(
+            specification, acquisition_frame, temporary, context,
+            dataset=dataset, sources=[sources[dataset]], terrarium=True,
+        )
+    return _fetch_gsi_loader(
+        specification, acquisition_frame, temporary, context, dataset=dataset or "best"
+    )
+
+
+def _fetch_gsi_loader(
+    specification, acquisition_frame, temporary, context,
+    dataset="best", sources=None, terrarium=False,
+):
     wgs84 = osr.SpatialReference()
     wgs84.ImportFromEPSG(4326)
     wgs84.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
@@ -299,35 +578,46 @@ def _fetch_gsi_loader(specification, acquisition_frame, temporary, context):
     pad_x = max((xmax - xmin) * 0.08, 0.0002)
     pad_y = max((ymax - ymin) * 0.08, 0.0002)
     loader = GSITileDEMLoader()
-    dataset = specification.get("gsi_dataset", "best")
-    source_map = {
-        "1m": [GSITileDEMLoader.TILE_SOURCES[0]],
-        "5m": [GSITileDEMLoader.TILE_SOURCES[1]],
-        "10m": [GSITileDEMLoader.TILE_SOURCES[2]],
-    }
+    if sources is None:
+        source_map = {
+            "1m": [GSITileDEMLoader.TILE_SOURCES[0]],
+            "5m": [GSITileDEMLoader.TILE_SOURCES[1]],
+            "10m": [GSITileDEMLoader.TILE_SOURCES[2]],
+        }
+        sources = source_map.get(dataset)
+    label = "Terrarium DEM tiles" if terrarium else "GSI DEM tiles"
 
     def progress(done, total):
         context.check()
-        context.report("Fetching GSI DEM tiles... {}/{}".format(done, total))
+        context.report("Fetching {}... {}/{}".format(label, done, total))
 
     loader.fetch_for_extent(
         xmin - pad_x,
         ymin - pad_y,
         xmax + pad_x,
         ymax + pad_y,
-        sources=source_map.get(dataset),
+        sources=sources,
         cancel_cb=context.cancelled,
         progress_cb=progress,
     )
     context.check()
     if loader.data is None or not np.isfinite(loader.data).any():
         details = getattr(loader, "last_errors", [])
-        raise TerrainJobError(details[0] if details else "GSI DEM tiles are unavailable for this area.")
+        raise TerrainJobError(details[0] if details else "{} are unavailable for this area.".format(label))
     work_dir = os.path.join(temporary, "_work")
     os.makedirs(work_dir, exist_ok=True)
-    raw_path = os.path.join(work_dir, "gsi_source.tif")
+    raw_path = os.path.join(work_dir, "tile_source.tif")
     save_as_geotiff(loader, raw_path)
     prepared_loader = DEMLoader().load(raw_path)
+    if terrarium:
+        return prepared_loader, {
+            "kind": "terrarium",
+            "provider": "AWS Terrain Tiles (Mapzen Terrarium)",
+            "dataset": getattr(loader, "_used_source_label", "Terrarium"),
+            "requested_dataset": dataset,
+            "attribution": "Terrain Tiles: Mapzen / AWS Open Data and their data sources",
+            "service": "https://registry.opendata.aws/terrain-tiles/",
+        }
     used = getattr(loader, "_used_source_label", "GSI DEM")
     return prepared_loader, {
         "kind": "gsi",
@@ -358,6 +648,20 @@ def _spatial_reference(wkt):
     reference.DemoteTo2D()
     reference.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     return reference
+
+
+# The DEM for catchments is fetched this many times wider (and higher) than
+# the A-series frame: one frame added on every side.
+WATERSHED_WIDEN = 3.0
+
+
+def _scaled_frame(frame, factor):
+    xmin, xmax, ymin, ymax = frame.GetEnvelope()
+    cx = (xmin + xmax) / 2.0
+    cy = (ymin + ymax) / 2.0
+    half_w = (xmax - xmin) * factor / 2.0
+    half_h = (ymax - ymin) * factor / 2.0
+    return _rectangle_geometry((cx - half_w, cx + half_w, cy - half_h, cy + half_h))
 
 
 def _a_series_frame(geometry, landscape):
