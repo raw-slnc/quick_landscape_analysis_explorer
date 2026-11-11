@@ -28,7 +28,8 @@ class QuickLandscapeAnalysisExplorer:
         self.group_menu = None
 
     def _action_text(self):
-        return tr(PLUGIN_NAME, PLUGIN_NAME + "（景観解析）")
+        # 予察: the desk study before field work, which is what the plugin is for.
+        return tr(PLUGIN_NAME, PLUGIN_NAME + "（地形予察）")
 
     def initGui(self):
         icon = QIcon(os.path.join(self.plugin_dir, "icon.svg"))
@@ -67,7 +68,8 @@ class QuickLandscapeAnalysisExplorer:
     def run(self):
         if self.dialog is None:
             self._create_dialog()
-            _center_on(self.dialog, self.iface.mainWindow())
+            if not self.dialog.restore_saved_window_geometry():
+                _center_on(self.dialog, self.iface.mainWindow())
         if self.dialog.isMinimized():
             self.dialog.showNormal()
         self.dialog.show()
@@ -86,6 +88,7 @@ class QuickLandscapeAnalysisExplorer:
     def _close_dialog(self, clear_analysis_layers=False):
         if self.dialog is None:
             return
+        self.dialog.save_window_geometry()
         self.dialog.cleanup(clear_analysis_layers=clear_analysis_layers)
         self.dialog.hide()
         self.dialog.deleteLater()

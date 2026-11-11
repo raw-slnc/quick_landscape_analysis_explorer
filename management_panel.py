@@ -20,7 +20,7 @@ from qgis.PyQt.QtWidgets import (
 from qgis.core import QgsLayerTreeGroup, QgsLayerTreeLayer
 
 from .i18n import tr
-from .layer_combo import LayerTreeOrderComboBox
+from .layer_combo import LayerTreeOrderComboBox, LayerVisibilityButton
 
 
 _LAYER_ID_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -30,6 +30,7 @@ class AnalysisManagementPanel(QWidget):
     """Layer-panel-like choice of analysis layers for the preview."""
 
     exitRequested = pyqtSignal()
+    renameRequested = pyqtSignal()
     layersChanged = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -67,7 +68,20 @@ class AnalysisManagementPanel(QWidget):
         name_font = self.analysisNameLabel.font()
         name_font.setBold(True)
         self.analysisNameLabel.setFont(name_font)
-        analysis_layout.addWidget(self.analysisNameLabel)
+        # The name and, at the top right of the box, the button that renames it.
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.addWidget(self.analysisNameLabel, 1)
+        self.renameButton = QPushButton(
+            # Leading/trailing spaces give the label breathing room, like the
+            # Open folder button.
+            tr("   Rename analysis   ", "   解析名を変更   "), analysis_box
+        )
+        self.renameButton.clicked.connect(self.renameRequested)
+        name_row.addWidget(
+            self.renameButton, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop
+        )
+        analysis_layout.addLayout(name_row)
         self.detailsLabel = QLabel(analysis_box)
         self.detailsLabel.setWordWrap(True)
         self.detailsLabel.setTextInteractionFlags(
@@ -106,19 +120,30 @@ class AnalysisManagementPanel(QWidget):
         optional_row = QHBoxLayout(optional_box)
         self.optionalLayerCombo1 = LayerTreeOrderComboBox(optional_box)
         self.optionalLayerCombo2 = LayerTreeOrderComboBox(optional_box)
+        # Like the preview-layer row: each combo has the layer-panel on/off
+        # button of its layer.
+        self._optionalVisibilityButtons = []
         for index, combo in enumerate(
             (self.optionalLayerCombo1, self.optionalLayerCombo2), start=1
         ):
             combo.setAllowEmptyLayer(True)
             combo.layerChanged.connect(lambda *_args: self.layersChanged.emit())
+            button = LayerVisibilityButton(combo, optional_box)
+            button.setFixedHeight(combo.sizeHint().height())
+            self._optionalVisibilityButtons.append(button)
             if index > 1:
                 optional_row.addSpacing(8)
             optional_row.addWidget(
                 QLabel(tr("Optional {}", "オプショナル{}").format(index), optional_box)
             )
-            optional_row.addWidget(combo, 1)
-        layout.addWidget(optional_box)
+            combo_row = QHBoxLayout()
+            combo_row.setSpacing(4)
+            combo_row.addWidget(combo, 1)
+            combo_row.addWidget(button)
+            optional_row.addLayout(combo_row, 1)
 
+        # Below the analysis layers, so that the optional layers sit right
+        # above the shared preview-layer row (all non-analysis layers together).
         footer = QHBoxLayout()
         footer.addStretch(1)
         self.exitButton = QPushButton(
@@ -138,6 +163,10 @@ class AnalysisManagementPanel(QWidget):
         self.exitButton.clicked.connect(self.exitRequested)
         footer.addWidget(self.exitButton)
         layout.addLayout(footer)
+        layout.addWidget(optional_box)
+
+    def optionalVisibilityButtons(self):
+        return tuple(self._optionalVisibilityButtons)
 
     def packagePath(self):
         return self._packagePath

@@ -40,10 +40,14 @@ GROUPS = [
     (("New Zealand open data", "ニュージーランド オープンデータ"), NEW_ZEALAND_BBOX, [
         ("linz_dem", ("LINZ DEM 1 m", "LINZ DEM 1 m")),
     ]),
+    # Terrarium is chosen by tile zoom level: the pixel size depends on the
+    # latitude and the real detail on the regional source data (about 30 m
+    # SRTM in Japan), so no metre value is shown. The keys keep their old
+    # names because analysis manifests store them.
     (("Global (AWS Terrarium)", "全球（AWS Terrarium）"), None, [
-        ("terrarium:2m", ("Terrarium ~2 m (small areas)", "Terrarium 約2 m（狭い範囲向け）")),
-        ("terrarium:5m", ("Terrarium ~5 m", "Terrarium 約5 m")),
-        ("terrarium:10m", ("Terrarium ~10 m (wide areas)", "Terrarium 約10 m（広い範囲向け）")),
+        ("terrarium:2m", ("Terrarium zoom 14 (small areas)", "Terrarium ズーム14（狭い範囲向け）")),
+        ("terrarium:5m", ("Terrarium zoom 13", "Terrarium ズーム13")),
+        ("terrarium:10m", ("Terrarium zoom 12 (wide areas)", "Terrarium ズーム12（広い範囲向け）")),
     ]),
 ]
 

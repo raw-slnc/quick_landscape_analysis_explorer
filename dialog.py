@@ -11,7 +11,19 @@ import zipfile
 
 from qgis.PyQt import sip
 from qgis.PyQt.QtXml import QDomDocument
-from qgis.PyQt.QtCore import QEvent, QRect, QRectF, QSize, QTimer, QUrl, Qt, pyqtSignal
+from qgis.PyQt.QtCore import (
+    QCoreApplication,
+    QDir,
+    QEvent,
+    QProcess,
+    QRect,
+    QRectF,
+    QSize,
+    QTimer,
+    QUrl,
+    Qt,
+    pyqtSignal,
+)
 from qgis.PyQt.QtGui import (
     QBrush,
     QColor,
@@ -35,6 +47,7 @@ from qgis.PyQt.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -67,7 +80,6 @@ from qgis.core import (
     QgsPointXY,
     QgsProject,
     QgsRasterLayer,
-    QgsRuleBasedRenderer,
     QgsVectorLayer,
     QgsRasterShader,
     QgsRectangle,
@@ -86,7 +98,8 @@ from qgis.gui import (
 from .analyses.terrain import TerrainJobWorker
 from .core import packages
 from .i18n import ENGLISH, JAPANESE, is_japanese, set_language, tr
-from .layer_combo import LayerTreeOrderComboBox
+from .layer_combo import LayerTreeOrderComboBox, LayerVisibilityButton
+from .preview_scale import ScaleLimitSuspender
 from .core import session
 from .management_panel import AnalysisManagementPanel
 from .order_arrows import LayerOrderArrows
@@ -363,17 +376,15 @@ class LandscapeExplorerDialog(QDialog):
         self.iface = iface
         self.mainCanvas = iface.mapCanvas()
         self._previewAoiLayer = None
-        self._previewOverlayLayer = None
-        self._previewOverlaySourceId = None
-        self._overlayOpacityValues = (100, 80, 60, 40, 20, 0)
-        self._overlayOpacityIndex = 0
-        self._previewBaseLayer = None
-        self._previewBaseSourceId = None
-        # Preview-only copies (scale limits removed) of analysis and optional
-        # layers, by source layer ID, plus the sources being watched.
-        self._previewCopies = {}
-        self._watchedPreviewSources = {}
-        self._baseOpacityIndex = 0
+        # The preview draws the project layers themselves; while this window
+        # is in front their scale limits are lifted (see preview_scale).
+        self._scaleSuspender = ScaleLimitSuspender()
+        # Layer-panel visibility changes come in bursts (a group and its
+        # children); redraw the preview once after them.
+        self._previewLayersTimer = QTimer(self)
+        self._previewLayersTimer.setSingleShot(True)
+        self._previewLayersTimer.setInterval(0)
+        self._previewLayersTimer.timeout.connect(self._update_preview_layers)
         # Analysis management: the package being managed, the explore view
         # to return to, and choices waiting for a rebuilt (language) window.
         self._managementPackagePath = None
@@ -484,8 +495,11 @@ class LandscapeExplorerDialog(QDialog):
             combo.activated.connect(
                 lambda _index, key=key, combo=combo: self._store_layer_choice(key, combo)
             )
-        self.overlayOpacityButton.clicked.connect(self._cycle_overlay_opacity)
-        self.baseOpacityButton.clicked.connect(self._cycle_base_opacity)
+        # Overlay, base map and optional layers are drawn only while they are
+        # shown in the layer panel.
+        QgsProject.instance().layerTreeRoot().visibilityChanged.connect(
+            self._previewLayersTimer.start
+        )
         stored_paper = QgsProject.instance().readEntry(_PROJECT_SCOPE, _PAPER_KEY, "")[0]
         if stored_paper in PAPER_SIZES_MM:
             self.paperSizeCombo.setCurrentIndex(self.paperSizeCombo.findData(stored_paper))
@@ -506,6 +520,7 @@ class LandscapeExplorerDialog(QDialog):
             )
         )
         self.managementPanel.exitRequested.connect(self._finish_management_by_user)
+        self.managementPanel.renameRequested.connect(self._rename_analysis)
         self.managementPanel.layersChanged.connect(self._update_preview_layers)
         self.managementPanel.restoreWindowButton.clicked.connect(
             self._restore_normal_window
@@ -790,10 +805,11 @@ class LandscapeExplorerDialog(QDialog):
         self.managementPanel = AnalysisManagementPanel(self.controlStack)
         self.controlStack.addWidget(self.managementPanel)
         layout.addWidget(self.controlStack)
-        # Shared status: cleared on every screen switch so it always describes
-        # the screen and data currently in use.
-        layout.addWidget(self._build_result_box(), 1)
+        # The preview layers follow the screen's own layer choices directly.
         layout.addLayout(self._build_preview_layer_area(panel))
+        # Shared status at the bottom: cleared on every screen switch so it
+        # always describes the screen and data currently in use.
+        layout.addWidget(self._build_result_box(), 1)
         layout.addLayout(self._build_buttons())
         return panel
 
@@ -824,19 +840,13 @@ class LandscapeExplorerDialog(QDialog):
         overlay_layout.setSpacing(4)
         self.overlayLayerCombo = LayerTreeOrderComboBox(box)
         self.overlayLayerCombo.setAllowEmptyLayer(True)
-        self.overlayOpacityButton = QToolButton(overlay_row)
-        self.overlayOpacityButton.setText("100%")
-        overlay_height = self.overlayLayerCombo.sizeHint().height()
-        self.overlayOpacityButton.setFixedHeight(overlay_height)
-        self.overlayOpacityButton.setMinimumWidth(48)
-        self.overlayOpacityButton.setToolTip(
-            tr(
-                "Cycle preview opacity: 100, 80, 60, 40, 20, 0 percent.",
-                "プレビュー不透明度を100、80、60、40、20、0%の順で切り替えます。",
-            )
+        self.overlayVisibilityButton = LayerVisibilityButton(
+            self.overlayLayerCombo, overlay_row
         )
+        overlay_height = self.overlayLayerCombo.sizeHint().height()
+        self.overlayVisibilityButton.setFixedHeight(overlay_height)
         overlay_layout.addWidget(self.overlayLayerCombo, 1)
-        overlay_layout.addWidget(self.overlayOpacityButton)
+        overlay_layout.addWidget(self.overlayVisibilityButton)
         row_layout.addWidget(QLabel(tr("Overlay", "Overlay"), box))
         row_layout.addWidget(overlay_row, 1)
         row_layout.addSpacing(8)
@@ -847,13 +857,12 @@ class LandscapeExplorerDialog(QDialog):
         base_map_layout.setSpacing(4)
         self.baseMapCombo = LayerTreeOrderComboBox(box)
         self.baseMapCombo.setAllowEmptyLayer(True)
-        self.baseOpacityButton = QToolButton(base_map_row)
-        self.baseOpacityButton.setText("100%")
-        self.baseOpacityButton.setFixedHeight(overlay_height)
-        self.baseOpacityButton.setMinimumWidth(48)
-        self.baseOpacityButton.setToolTip(self.overlayOpacityButton.toolTip())
+        self.baseVisibilityButton = LayerVisibilityButton(
+            self.baseMapCombo, base_map_row
+        )
+        self.baseVisibilityButton.setFixedHeight(overlay_height)
         base_map_layout.addWidget(self.baseMapCombo, 1)
-        base_map_layout.addWidget(self.baseOpacityButton)
+        base_map_layout.addWidget(self.baseVisibilityButton)
         row_layout.addWidget(QLabel(tr("Base map", "Base map"), box))
         row_layout.addWidget(base_map_row, 1)
 
@@ -891,6 +900,10 @@ class LandscapeExplorerDialog(QDialog):
 
     def changeEvent(self, event):
         super().changeEvent(event)
+        if event.type() == QEvent.Type.ActivationChange:
+            # Decide after the switch has finished: the window that takes the
+            # focus may be one of this window's own dialogs.
+            QTimer.singleShot(0, self._update_scale_suspension)
         if event.type() == QEvent.Type.WindowStateChange:
             screen_states = (
                 Qt.WindowState.WindowMaximized | Qt.WindowState.WindowFullScreen
@@ -931,7 +944,12 @@ class LandscapeExplorerDialog(QDialog):
     def _close_and_clear(self):
         # The analysis layers stay in the project (and in the print layout);
         # they are swapped only when another analysis is loaded or run.
+        self.save_window_geometry()
         self.hide()
+        # Closing ends the plugin's temporary changes to the project layers.
+        for button, _in_use in self._visibility_buttons():
+            button.forget()
+        self._scaleSuspender.restore()
 
     def reject(self):
         """Esc closes the window; the analysis layers stay."""
@@ -946,6 +964,9 @@ class LandscapeExplorerDialog(QDialog):
             self._restore_recorded_normal_geometry()
         self._apply_a_series_layout()
         self._record_normal_geometry()
+        if self.isVisible() and not self.isMinimized():
+            # Minimising alone should not forget that it was maximised.
+            self.save_window_geometry()
 
     def _in_screen_state(self):
         return bool(
@@ -1021,6 +1042,9 @@ class LandscapeExplorerDialog(QDialog):
             self._previewResizeTimer.stop()
             self._restore_resized_preview_extent(final=True)
             self._record_normal_geometry()
+            # Saved as soon as a move/resize settles, so the place is kept
+            # even when QGIS quits with the window open.
+            self.save_window_geometry()
         finally:
             if self._previewFrozenForWindowChange:
                 self.previewCanvas.freeze(False)
@@ -1413,6 +1437,7 @@ class LandscapeExplorerDialog(QDialog):
 
     def _start_geopdf_task(self, path, dpi, width_px, height_px):
         del width_px, height_px
+        self._ensure_scale_suspension()
         self.exportGeoPdfButton.setEnabled(False)
         self.resultEdit.setPlainText(
             tr("Making GeoPDF ({}, {} dpi)...", "GeoPDFを作成しています（{}・{} dpi）…").format(
@@ -1676,6 +1701,7 @@ class LandscapeExplorerDialog(QDialog):
     def _start_image_task(self, path, file_format, dpi, width_px, height_px):
         from qgis.core import QgsApplication, QgsMapRendererTask, QgsMapSettings
 
+        self._ensure_scale_suspension()
         source_settings = self.previewCanvas.mapSettings()
         # Copies, so the task keeps drawing even if the preview changes.
         self._imageTaskLayers = [layer.clone() for layer in self.previewCanvas.layers()]
@@ -2340,8 +2366,10 @@ class LandscapeExplorerDialog(QDialog):
         )
         self.openAnalysisFolderButton.setToolTip(
             tr(
-                "Open the folder that holds the analysis ZIP files in the file manager.",
-                "解析のZIPファイルを置いているフォルダをファイルマネージャで開きます。",
+                "Opens the folder that holds the analysis ZIP files.\n"
+                "The ZIP chosen in the list is shown selected.",
+                "解析のZIPファイルを置いているフォルダを開きます。\n"
+                "一覧で選んでいるZIPは、選択された状態で表示されます。",
             )
         )
         self.openAnalysisFolderButton.clicked.connect(self._open_analysis_folder)
@@ -2560,6 +2588,16 @@ class LandscapeExplorerDialog(QDialog):
 
     def eventFilter(self, watched, event):
         if (
+            event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+            and watched in (self.previewCanvas, self.previewCanvas.viewport())
+        ):
+            # QgsMapCanvas marks Esc as handled though it does nothing with it
+            # (no Esc action in the canvas or these map tools), so the dialog
+            # never saw it. Close as Esc does everywhere else in the window.
+            self.reject()
+            return True
+        if (
             self._in_management()
             and event.type() in _PREVIEW_NAVIGATION_EVENTS
             and not (
@@ -2632,6 +2670,9 @@ class LandscapeExplorerDialog(QDialog):
         self._managementExtent = None
         self.resultEdit.clear()
         self.managementPanel.clear()
+        # The optional layers belong to analysis management only.
+        for button in self.managementPanel.optionalVisibilityButtons():
+            button.forget()
         self.controlStack.setCurrentIndex(0)
         self._update_management_controls()
         view = self._explorePreviewView
@@ -2765,6 +2806,99 @@ class LandscapeExplorerDialog(QDialog):
         )
         self.managementPanel.setLayerGroup(_package_layer_group(path), checked_ids)
 
+    def _rename_analysis(self):
+        """Rename the analysis being managed (its ZIP and its stored name)."""
+
+        path = self._managementPackagePath
+        if not path:
+            return
+        if self._imageTask is not None:
+            self.resultEdit.setPlainText(tr(
+                "Wait until the image is finished.", "画像の作成が終わるまでお待ちください。"
+            ))
+            return
+        try:
+            old_name = packages.read_manifest(path)["analysis_name"]
+        except packages.PackageError:
+            self.resultEdit.setPlainText(
+                tr("The analysis results could not be loaded.", "解析結果を読み込めません。")
+            )
+            return
+        text, accepted = QInputDialog.getText(
+            self,
+            tr("Rename analysis", "解析名を変更"),
+            tr("New analysis name:", "新しい解析名："),
+            QLineEdit.EchoMode.Normal,
+            old_name,
+        )
+        if not accepted:
+            return
+        new_name = packages.normalized_name(text)
+        if new_name == old_name:
+            return
+        try:
+            new_path = packages.renamed_package_path(path, new_name)
+        except packages.PackageError:
+            self.resultEdit.setPlainText(
+                tr("Enter an analysis name.", "解析名を入力してください。")
+            )
+            return
+        if not packages.is_same_file_path(new_path, path) and os.path.exists(new_path):
+            self.resultEdit.setPlainText(_name_taken_text())
+            return
+
+        # The ZIP is read by the analysis layers and their preview copies:
+        # let go of them all before the file is replaced (Windows locks it).
+        project = QgsProject.instance()
+        checked_members = {
+            _layer_member(project.mapLayer(layer_id), path)
+            for layer_id in self.managementPanel.checkedLayerIds()
+            if project.mapLayer(layer_id) is not None
+        }
+        self._exit_management()
+        self.previewCanvas.stopRendering()
+        self.mainCanvas.stopRendering()
+        self._remove_package_layers(path)
+        _prune_empty_output_groups(project.layerTreeRoot())
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+        error = None
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            new_path = packages.rename_package(path, new_name)
+        except (packages.PackageError, OSError, zipfile.BadZipFile) as caught:
+            error = caught
+            new_path = path
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        # Back to the analysis (renamed, or unchanged after a failure).
+        self._refresh_saved_analyses(new_path)
+        try:
+            manifest = packages.read_manifest(new_path)
+        except packages.PackageError:
+            manifest = None
+        entered = False
+        if manifest is not None:
+            self._add_package_layers(new_path, manifest)
+            checked_ids = [
+                layer.id()
+                for layer in _package_layers(new_path)
+                if _layer_member(layer, new_path) in checked_members
+            ]
+            entered = self._enter_management(new_path, checked_ids)
+        if error is not None:
+            self.resultEdit.setPlainText(tr(
+                "The analysis could not be renamed: {}\n"
+                "The file may be in use. Nothing was changed.",
+                "解析名を変更できませんでした：{}\n"
+                "ファイルが使用中の可能性があります。変更していません。",
+            ).format(error))
+        elif entered:
+            self.resultEdit.setPlainText(tr(
+                "Renamed the analysis: {} → {}", "解析名を変更しました：{} → {}"
+            ).format(old_name, new_name))
+
     def _resume_pending_management(self):
         pending = self._pendingManagement
         self._pendingManagement = None
@@ -2778,159 +2912,74 @@ class LandscapeExplorerDialog(QDialog):
 
     def _update_preview_layers(self, *args):
         del args
-        overlay_source = self.overlayLayerCombo.currentLayer()
-        base_map = self.baseMapCombo.currentLayer()
+        overlay = _shown_in_layer_panel(self.overlayLayerCombo.currentLayer())
+        base_map = _shown_in_layer_panel(self.baseMapCombo.currentLayer())
         # The polygon layer is also part of the picture: it stays drawn with
         # "Use preview map extent" (only its selection is cleared then).
         aoi_layer = None if self._in_management() else self.aoiLayerCombo.currentLayer()
-        old_overlay = self._set_preview_overlay_source(overlay_source)
-        show_base = (
-            base_map is not None
-            and base_map is not aoi_layer
-            and base_map is not overlay_source
-        )
-        old_base = self._set_preview_base_source(base_map if show_base else None)
-        layers = []
         # Canvas order is top to bottom. Analysis management: optional 1,
         # optional 2, checked analysis layers. Otherwise the AOI. Then the
-        # overlay and the base map.
-        used_copies = set()
+        # overlay and the base map. These are the project layers themselves,
+        # drawn with their own styles; a layer is listed only once.
+        layers = []
+
+        def add(layer):
+            if layer is not None and layer not in layers:
+                layers.append(layer)
+
         if self._in_management():
             project = QgsProject.instance()
-            sources = []
             for _key, combo in self._optional_layer_combos():
-                layer = combo.currentLayer()
-                if (
-                    layer is not None
-                    and layer not in sources
-                    and layer is not overlay_source
-                    and layer is not base_map
-                ):
-                    sources.append(layer)
+                layer = _shown_in_layer_panel(combo.currentLayer())
+                if layer is not overlay and layer is not base_map:
+                    add(layer)
             for layer_id in self.managementPanel.checkedLayerIds():
-                layer = project.mapLayer(layer_id)
-                if layer is not None and layer not in sources:
-                    sources.append(layer)
-            # Drawn as copies without scale limits, so nothing disappears at
-            # the preview's scale (the project layers are not changed).
-            for layer in sources:
-                layers.append(self._preview_copy(layer))
-                used_copies.add(layer.id())
-        if aoi_layer is not None and aoi_layer is not overlay_source:
-            layers.append(aoi_layer)
-        if self._previewOverlayLayer is not None:
-            layers.append(self._previewOverlayLayer)
-        if self._previewBaseLayer is not None:
-            layers.append(self._previewBaseLayer)
+                add(project.mapLayer(layer_id))
+        if aoi_layer is not overlay:
+            add(aoi_layer)
+        add(overlay)
+        if base_map is not aoi_layer:
+            add(base_map)
         self.previewCanvas.setLayers(layers)
+        self._update_scale_suspension()
         self.previewCanvas.refresh()
-        for old_layer in (old_overlay, old_base):
-            if old_layer is not None:
-                old_layer.deleteLater()
-        for source_id in list(self._previewCopies):
-            if source_id not in used_copies:
-                self._previewCopies.pop(source_id).deleteLater()
-        # Stop watching layers that have left the project.
-        project = QgsProject.instance()
-        for source_id in list(self._watchedPreviewSources):
-            if project.mapLayer(source_id) is None:
-                layer, slot = self._watchedPreviewSources.pop(source_id)
-                _disconnect_style_watch(layer, slot)
         self._refresh_preview_polygon()
 
-    def _preview_copy(self, layer):
-        copy = self._previewCopies.get(layer.id())
-        if copy is None:
-            copy = _unlimited_preview_copy(layer)
-            self._previewCopies[layer.id()] = copy
-            self._watch_preview_source(layer)
-        return copy
+    def _update_scale_suspension(self):
+        """Make the plugin's temporary changes to the project layers only
+        while this window (or one of its own dialogs) is in front: the
+        layer-panel on/off choices of the preview-layer buttons and the
+        lifted scale limits. Behind it, the project is as the user left it."""
 
-    def _watch_preview_source(self, layer):
-        """Rebuild a layer's preview copy when its style changes in QGIS."""
-
-        if layer is None or layer.id() in self._watchedPreviewSources:
+        if sip.isdeleted(self):
             return
-        layer_id = layer.id()
+        active = QApplication.activeWindow()
+        in_front = self.isVisible() and active is not None and (
+            active is self or self.isAncestorOf(active)
+        )
+        managing = self._in_management()
+        for button, in_use in self._visibility_buttons():
+            button.setApplied(in_front and (in_use or managing))
+        if in_front:
+            self._scaleSuspender.suspend(self.previewCanvas.layers())
+        else:
+            self._scaleSuspender.restore()
 
-        def changed(*_args, layer_id=layer_id):
-            self._preview_source_style_changed(layer_id)
+    def _visibility_buttons(self):
+        """(button, used outside analysis management)"""
 
-        layer.styleChanged.connect(changed)
-        if hasattr(layer, "rendererChanged"):
-            layer.rendererChanged.connect(changed)
-        self._watchedPreviewSources[layer_id] = (layer, changed)
+        return (
+            (self.overlayVisibilityButton, True),
+            (self.baseVisibilityButton, True),
+        ) + tuple(
+            (button, False)
+            for button in self.managementPanel.optionalVisibilityButtons()
+        )
 
-    def _preview_source_style_changed(self, layer_id):
-        copy = self._previewCopies.pop(layer_id, None)
-        if copy is not None:
-            copy.deleteLater()
-        if layer_id == self._previewOverlaySourceId:
-            self._previewOverlaySourceId = None  # re-copied on the next update
-        if layer_id == self._previewBaseSourceId:
-            self._previewBaseSourceId = None
-        QTimer.singleShot(0, self._update_preview_layers)
+    def _ensure_scale_suspension(self):
+        """Before an export: the save dialog may have just taken the focus."""
 
-    def _stop_watching_preview_sources(self):
-        for layer, slot in self._watchedPreviewSources.values():
-            _disconnect_style_watch(layer, slot)
-        self._watchedPreviewSources = {}
-
-    def _set_preview_base_source(self, source_layer):
-        """Use a preview-only copy so opacity never changes the main map."""
-
-        source_id = source_layer.id() if source_layer is not None else None
-        old_base = None
-        if source_id != self._previewBaseSourceId:
-            old_base = self._previewBaseLayer
-            self._previewBaseLayer = (
-                _unlimited_preview_copy(source_layer) if source_layer is not None else None
-            )
-            self._watch_preview_source(source_layer)
-            self._previewBaseSourceId = source_id
-        if self._previewBaseLayer is not None:
-            opacity = self._overlayOpacityValues[self._baseOpacityIndex] / 100.0
-            self._previewBaseLayer.setOpacity(opacity)
-        return old_base
-
-    def _cycle_base_opacity(self):
-        self._baseOpacityIndex = (
-            self._baseOpacityIndex + 1
-        ) % len(self._overlayOpacityValues)
-        opacity = self._overlayOpacityValues[self._baseOpacityIndex]
-        self.baseOpacityButton.setText("{}%".format(opacity))
-        if self._previewBaseLayer is not None:
-            self._previewBaseLayer.setOpacity(opacity / 100.0)
-            # The canvas keeps a cached image per layer; drop it so the new
-            # opacity is drawn now instead of after the next pan or zoom.
-            self._previewBaseLayer.triggerRepaint()
-            self.previewCanvas.refresh()
-
-    def _set_preview_overlay_source(self, source_layer):
-        source_id = source_layer.id() if source_layer is not None else None
-        old_overlay = None
-        if source_id != self._previewOverlaySourceId:
-            old_overlay = self._previewOverlayLayer
-            self._previewOverlayLayer = (
-                _unlimited_preview_copy(source_layer) if source_layer is not None else None
-            )
-            self._watch_preview_source(source_layer)
-            self._previewOverlaySourceId = source_id
-        if self._previewOverlayLayer is not None:
-            opacity = self._overlayOpacityValues[self._overlayOpacityIndex] / 100.0
-            self._previewOverlayLayer.setOpacity(opacity)
-        return old_overlay
-
-    def _cycle_overlay_opacity(self):
-        self._overlayOpacityIndex = (
-            self._overlayOpacityIndex + 1
-        ) % len(self._overlayOpacityValues)
-        opacity = self._overlayOpacityValues[self._overlayOpacityIndex]
-        self.overlayOpacityButton.setText("{}%".format(opacity))
-        if self._previewOverlayLayer is not None:
-            self._previewOverlayLayer.setOpacity(opacity / 100.0)
-            self._previewOverlayLayer.triggerRepaint()
-            self.previewCanvas.refresh()
+        self._scaleSuspender.suspend(self.previewCanvas.layers())
 
     def _sync_preview_from_main(self, *args):
         del args
@@ -3194,11 +3243,73 @@ class LandscapeExplorerDialog(QDialog):
             item = self.demSourceCombo.model().item(self.demSourceCombo.currentIndex())
             note = item.toolTip() if item is not None else note
         self.demSourceNote.setText(note)
+        # Remember the source before this change, to go back to it when the
+        # Terrarium notice is not accepted.
+        self._demSourceBeforeChange = getattr(self, "_demSourceCurrent", None)
+        self._demSourceCurrent = key
+
+    def _confirm_terrarium(self):
+        """Ask the user to accept the Terrarium notice. Return whether accepted."""
+
+        if QgsSettings().value(TERRARIUM_NOTICE_HIDDEN_KEY, False, type=bool):
+            return True
+        # The standard message box: icon, text, informative text, and the
+        # "don't show again" check box at the left of the button row.
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(tr("AWS Terrarium", "AWS Terrarium"))
+        box.setText(tr(
+            "The resolution of the source data differs by region.",
+            "提供地域によって元データの解像度が異なります。",
+        ))
+        box.setInformativeText(tr(
+            "In some regions it may not give the result you need, so use it with care.",
+            "求める結果が得られない地域もあるため、注意して使用してください。",
+        ))
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.Ok)
+        hide_next = QCheckBox(tr("Don't show this again", "次回から表示しない"), box)
+        box.setCheckBox(hide_next)
+        # QMessageBox picks its own width and wraps the text; give its text
+        # labels the width of the longest sentence so each stays on one line.
+        # The labels are found by Qt's internal names; if a Qt version names
+        # them differently, the box simply keeps its standard wrapping.
+        labels = [
+            label
+            for label in (
+                box.findChild(QLabel, "qt_msgbox_label"),
+                box.findChild(QLabel, "qt_msgbox_informativelabel"),
+            )
+            if label is not None
+        ]
+        if labels:
+            longest = max(
+                label.fontMetrics().horizontalAdvance(label.text()) for label in labels
+            )
+            for label in labels:
+                label.setMinimumWidth(longest + 8)
+        if box.exec() != QMessageBox.StandardButton.Ok:
+            return False
+        if hide_next.isChecked():
+            QgsSettings().setValue(TERRARIUM_NOTICE_HIDDEN_KEY, True)
+        return True
 
     def _dem_source_activated(self, *args):
         """The user chose a DEM source in the combo."""
 
         del args
+        key = self._dem_source_key() or ""
+        previous = getattr(self, "_demSourceBeforeChange", None) or ""
+        # Asked when Terrarium is chosen, not when moving between its zooms.
+        if (
+            key.startswith("terrarium:")
+            and not previous.startswith("terrarium:")
+            and not self._confirm_terrarium()
+        ):
+            self._set_dem_source(previous or dem_sources.DEFAULT_KEY)
+            return
         if self._dem_source_key() == "local":
             # The DEM section has no room for this under the layer combo, so
             # it goes to the shared status. The plugin cannot tell elevation
@@ -3606,6 +3717,10 @@ class LandscapeExplorerDialog(QDialog):
                 ).format(folder)
             )
             return
+        path = self.savedAnalysisCombo.currentData()
+        if path and os.path.isfile(path) and _show_file_in_file_manager(path):
+            return
+        # Nothing chosen, or the file manager could not select it.
         QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     def _load_selected_analysis(self):
@@ -3787,14 +3902,64 @@ class LandscapeExplorerDialog(QDialog):
         set_language(ENGLISH if is_japanese() else JAPANESE)
         self.languageChanged.emit()
 
-    def take_state(self):
+    def _normal_geometry_for_saving(self):
         if self.isMaximized() or self.isMinimized() or self.isFullScreen():
             # Qt's normalGeometry() can be screen-sized; prefer our record.
-            normal_geometry = self._lastNormalGeometry or self.normalGeometry()
-        elif self._fills_available_screen() and self._lastNormalGeometry is not None:
-            normal_geometry = self._lastNormalGeometry
-        else:
-            normal_geometry = self.geometry()
+            return self._lastNormalGeometry or self.normalGeometry()
+        if self._fills_available_screen() and self._lastNormalGeometry is not None:
+            return self._lastNormalGeometry
+        return self.geometry()
+
+    def save_window_geometry(self):
+        """Remember the window position and size for the next opening."""
+
+        geometry = self._normal_geometry_for_saving()
+        if geometry.width() <= 0 or geometry.height() <= 0:
+            return
+        settings = QgsSettings()
+        settings.setValue(
+            WINDOW_GEOMETRY_KEY,
+            [geometry.x(), geometry.y(), geometry.width(), geometry.height()],
+        )
+        settings.setValue(WINDOW_MAXIMIZED_KEY, self.isMaximized())
+
+    def restore_saved_window_geometry(self):
+        """Put the window where it was last time. Run before the first show().
+
+        Return False when nothing usable is saved (then the caller centres it).
+        """
+
+        settings = QgsSettings()
+        try:
+            x, y, width, height = (
+                int(value) for value in settings.value(WINDOW_GEOMETRY_KEY, [])
+            )
+        except (TypeError, ValueError):
+            return False
+        if width <= 0 or height <= 0:
+            return False
+        # The screen it was on may be gone (a monitor removed).
+        screen = QApplication.screenAt(QRect(x, y, width, height).center())
+        if screen is None:
+            return False
+        available = screen.availableGeometry()
+        width = min(width, available.width())
+        height = min(height, available.height())
+        # Keep the whole window, including the title bar, on that screen.
+        x = max(available.left(), min(x, available.right() - width + 1))
+        y = max(available.top(), min(y, available.bottom() - height + 1))
+        self._aSeriesLayoutTimer.stop()
+        self.setGeometry(x, y, width, height)
+        self._set_hidden_child_geometry()
+        self._apply_a_series_layout()
+        if settings.value(WINDOW_MAXIMIZED_KEY, False, type=bool):
+            self.setWindowState(
+                self.windowState() | Qt.WindowState.WindowMaximized
+            )
+        return True
+
+    def take_state(self):
+        normal_geometry = self._normal_geometry_for_saving()
         state = {
             "normal_geometry": (
                 normal_geometry.x(),
@@ -3817,13 +3982,7 @@ class LandscapeExplorerDialog(QDialog):
             "aoi_layer_id": _layer_id(self.aoiLayerCombo.currentLayer()),
             "local_dem_path": self._localDemPath,
             "overlay_layer_id": _layer_id(self.overlayLayerCombo.currentLayer()),
-            "overlay_opacity": self._overlayOpacityValues[
-                self._overlayOpacityIndex
-            ],
             "base_map_layer_id": _layer_id(self.baseMapCombo.currentLayer()),
-            "base_map_opacity": self._overlayOpacityValues[
-                self._baseOpacityIndex
-            ],
             "area_mode": (
                 "map_extent"
                 if self.mapExtentAreaRadio.isChecked()
@@ -3865,18 +4024,6 @@ class LandscapeExplorerDialog(QDialog):
         self.selectedOnlyCheck.setChecked(state.get("selected_only", True))
         self.mapExtentAreaRadio.setChecked(
             state.get("area_mode", "polygon") == "map_extent"
-        )
-        opacity = state.get("overlay_opacity", 100)
-        if opacity in self._overlayOpacityValues:
-            self._overlayOpacityIndex = self._overlayOpacityValues.index(opacity)
-        self.overlayOpacityButton.setText(
-            "{}%".format(self._overlayOpacityValues[self._overlayOpacityIndex])
-        )
-        base_opacity = state.get("base_map_opacity", 100)
-        if base_opacity in self._overlayOpacityValues:
-            self._baseOpacityIndex = self._overlayOpacityValues.index(base_opacity)
-        self.baseOpacityButton.setText(
-            "{}%".format(self._overlayOpacityValues[self._baseOpacityIndex])
         )
 
         project = QgsProject.instance()
@@ -3963,18 +4110,18 @@ class LandscapeExplorerDialog(QDialog):
         self.previewRubber.reset(Qgis.GeometryType.Polygon)
         self.localDemRubber.reset(Qgis.GeometryType.Polygon)
         self.previewCanvas.setLayers([])
-        if self._previewOverlayLayer is not None:
-            self._previewOverlayLayer.deleteLater()
-            self._previewOverlayLayer = None
-            self._previewOverlaySourceId = None
-        if self._previewBaseLayer is not None:
-            self._previewBaseLayer.deleteLater()
-            self._previewBaseLayer = None
-            self._previewBaseSourceId = None
-        for copy in self._previewCopies.values():
-            copy.deleteLater()
-        self._previewCopies = {}
-        self._stop_watching_preview_sources()
+        # Put the project layers' scale limits back and stop following the
+        # layer panel.
+        self._scaleSuspender.restore()
+        try:
+            QgsProject.instance().layerTreeRoot().visibilityChanged.disconnect(
+                self._previewLayersTimer.start
+            )
+        except (TypeError, RuntimeError):
+            pass
+        self._previewLayersTimer.stop()
+        for button, _in_use in self._visibility_buttons():
+            button.detach()
 
 
 def _route_label(route_id):
@@ -4015,7 +4162,46 @@ def _layer_id(layer):
     return layer.id() if layer is not None else ""
 
 
+def _show_file_in_file_manager(path):
+    """Open the file manager with ``path`` selected. Return False if not possible."""
+    path = os.path.abspath(path)
+    if sys.platform.startswith("win"):
+        # "/select," and the path must be separate arguments for explorer.
+        return QProcess.startDetached(
+            "explorer.exe", ["/select,", QDir.toNativeSeparators(path)]
+        )
+    if sys.platform == "darwin":
+        return QProcess.startDetached("open", ["-R", path])
+    # Linux and others: the freedesktop FileManager1 D-Bus interface
+    # (Nemo, Nautilus, Dolphin, Caja, ...).
+    uri = QUrl.fromLocalFile(path).toString(QUrl.ComponentFormattingOption.FullyEncoded)
+    process = QProcess()
+    process.start(
+        "dbus-send",
+        [
+            "--session",
+            "--print-reply",
+            "--dest=org.freedesktop.FileManager1",
+            "--type=method_call",
+            "/org/freedesktop/FileManager1",
+            "org.freedesktop.FileManager1.ShowItems",
+            "array:string:{}".format(uri),
+            "string:",
+        ],
+    )
+    if not process.waitForStarted(2000):
+        return False
+    if not process.waitForFinished(5000):
+        # The file manager may still be starting; do not open a second window.
+        return True
+    return (
+        process.exitStatus() == QProcess.ExitStatus.NormalExit
+        and process.exitCode() == 0
+    )
+
+
 _DEM_LABEL_ROLE = Qt.ItemDataRole.UserRole + 2
+
 
 def _inspect_local_dem(path, max_side=1024):
     """Check a file can be a DEM and find the area that holds values.
@@ -4154,6 +4340,10 @@ def _style_without_custom_properties():
 
 
 # The one print layout the plugin keeps (each analysis replaces it).
+TERRARIUM_NOTICE_HIDDEN_KEY = "qlae/terrarium_notice_hidden"
+WINDOW_GEOMETRY_KEY = "qlae/window_geometry"
+WINDOW_MAXIMIZED_KEY = "qlae/window_maximized"
+
 PRINT_LAYOUT_NAME = "Quick Landscape Analysis Explorer"
 
 # Image export: (file dialog filter, extension, QgsMapRendererTask format).
@@ -5039,52 +5229,44 @@ def _write_geopdf(path, paper_mm, dpi, layers, extent, crs):
     settings.writeGeoPdf = True
     settings.includeGeoPdfFeatures = True
     settings.rasterizeWholeImage = False
-    settings.forceVectorOutput = False
+    # Without this, a layer with a blend mode (the hillshade's Multiply) or a
+    # semi-transparent vector layer makes QGIS draw the whole map, or that
+    # layer, into one page-sized image: the map is no longer vector, and on
+    # large paper at high dpi that image cannot be made, so the map comes out
+    # empty while the export still succeeds. A GeoPDF keeps each layer's
+    # blend mode and opacity in the PDF itself, so nothing needs rasterizing.
+    settings.forceVectorOutput = True
     settings.appendGeoreference = True
-    result = QgsLayoutExporter(layout).exportToPdf(path, settings)
+    # The GeoPDF shows what the preview shows: every layer drawn there is
+    # visible when the PDF opens. QGIS takes this from each layer's
+    # "geopdf/initiallyVisible" (set in its own GeoPDF export dialog), so set
+    # it for the export only and put the earlier values back.
+    key = "geopdf/initiallyVisible"
+    earlier = [(layer, layer.customProperty(key)) for layer in layers]
+    for layer, _value in earlier:
+        layer.setCustomProperty(key, True)
+    try:
+        result = QgsLayoutExporter(layout).exportToPdf(path, settings)
+    finally:
+        for layer, value in earlier:
+            if sip.isdeleted(layer):
+                continue
+            if value is None:
+                layer.removeCustomProperty(key)
+            else:
+                layer.setCustomProperty(key, value)
     if result == QgsLayoutExporter.ExportResult.Success:
         return True, ""
     return False, str(result)
 
 
-def _disconnect_style_watch(layer, slot):
-    """Disconnect a style watch; a layer QGIS has deleted needs nothing.
+def _shown_in_layer_panel(layer):
+    """The layer if the QGIS layer panel shows it (parents included)."""
 
-    Touching a signal of a deleted layer crashes QGIS, and its connections
-    are already gone.
-    """
-    if layer is None or sip.isdeleted(layer):
-        return
-    for name in ("styleChanged", "rendererChanged"):
-        signal = getattr(layer, name, None)
-        if signal is None:
-            continue
-        try:
-            signal.disconnect(slot)
-        except (TypeError, RuntimeError):
-            pass
-
-
-def _unlimited_preview_copy(layer):
-    """A preview-only copy of a layer that is drawn at any scale.
-
-    Removes the layer's own scale visibility and the scale ranges of a
-    rule-based style, so the preview never hides a layer because of its
-    scale. The project layer is not changed.
-    """
-    copy = layer.clone()
-    copy.setScaleBasedVisibility(False)
-    renderer = copy.renderer() if hasattr(copy, "renderer") else None
-    if isinstance(renderer, QgsRuleBasedRenderer):
-
-        def clear(rule):
-            rule.setMinimumScale(0)
-            rule.setMaximumScale(0)
-            for child in rule.children():
-                clear(child)
-
-        clear(renderer.rootRule())
-    return copy
+    if layer is None:
+        return None
+    node = QgsProject.instance().layerTreeRoot().findLayer(layer.id())
+    return layer if node is not None and node.isVisible() else None
 
 
 def _watershed_status_text():
@@ -5130,8 +5312,12 @@ def _dem_source_note(key):
                     "0.5 m。フランス全土はまだ覆われていません。"),
         "linz_dem": ("1 m; the AWS copy may lag LINZ releases.",
                      "1 m。AWS上の複製は最新版より遅れることがあります。"),
-        "terrarium:2m": ("Global tiles for small areas.",
-                         "全球のタイル。狭い範囲向けです。"),
+        "terrarium:2m": ("Global tiles for small areas. Detail differs by region.",
+                         "全球のタイル。狭い範囲向け。解像度は地域で差があります。"),
+        "terrarium:5m": ("Global tiles. Detail differs by region.",
+                         "全球のタイル。解像度は地域で差があります。"),
+        "terrarium:10m": ("Global tiles for wide areas. Detail differs by region.",
+                          "全球のタイル。広い範囲向け。解像度は地域で差があります。"),
         "gsi:1m": ("Laser survey areas only.",
                    "航空レーザ測量の範囲だけです。"),
     }

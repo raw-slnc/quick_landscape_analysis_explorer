@@ -4,6 +4,8 @@
 import json
 import os
 import re
+import shutil
+import uuid
 import zipfile
 
 
@@ -60,6 +62,71 @@ def read_manifest(path):
     if not isinstance(manifest, dict) or not manifest.get("analysis_name"):
         raise PackageError("invalid_package")
     return manifest
+
+
+def normalized_name(analysis_name):
+    """The analysis name as it is stored: runs of spaces become one."""
+
+    return " ".join(str(analysis_name).strip().split())
+
+
+def renamed_package_path(path, new_name):
+    """Where ``path`` goes when renamed to ``new_name`` (same folder)."""
+
+    return os.path.join(os.path.dirname(os.path.abspath(path)), package_file_name(new_name))
+
+
+def is_same_file_path(first, second):
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
+
+
+def rename_package(path, new_name):
+    """Rename an analysis: the ZIP file and the name in its manifest.
+
+    The ZIP is written anew beside the old one (a ZIP member cannot be
+    replaced in place), then swapped in. When the old ZIP cannot be removed
+    (in use, on Windows), the new one is removed again and nothing changes.
+    Returns the new path.
+    """
+
+    path = os.path.abspath(path)
+    name = normalized_name(new_name)
+    new_path = renamed_package_path(path, name)
+    same_file = is_same_file_path(new_path, path)
+    if not same_file and os.path.exists(new_path):
+        raise PackageError("analysis_name_taken")
+    manifest = read_manifest(path)
+    manifest["analysis_name"] = name
+    payload = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+    temporary = new_path + ".{}.tmp".format(uuid.uuid4().hex)
+    try:
+        with zipfile.ZipFile(path, "r") as source, zipfile.ZipFile(
+            temporary, "w", compression=zipfile.ZIP_STORED, allowZip64=True
+        ) as target:
+            for info in source.infolist():
+                copied = zipfile.ZipInfo(info.filename, info.date_time)
+                copied.compress_type = zipfile.ZIP_STORED
+                copied.external_attr = info.external_attr
+                if info.filename == MANIFEST_NAME:
+                    target.writestr(copied, payload)
+                    continue
+                # The size lets zipfile choose ZIP64 for large members.
+                copied.file_size = info.file_size
+                with source.open(info) as reader, target.open(copied, "w") as writer:
+                    shutil.copyfileobj(reader, writer, 1024 * 1024)
+        if same_file:
+            os.replace(temporary, path)
+        else:
+            os.replace(temporary, new_path)
+            try:
+                os.remove(path)
+            except OSError:
+                os.remove(new_path)
+                raise
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    return new_path
 
 
 def list_packages(project_directory):

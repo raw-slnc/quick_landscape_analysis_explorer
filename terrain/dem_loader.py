@@ -399,10 +399,11 @@ class GSITileDEMLoader:
 
     # AWS Terrain Tiles (Mapzen/Terrarium) — 全球、登録不要
     # (url_template, zoom, label, encoding)
+    _TERRARIUM_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
     TERRARIUM_SOURCES = [
-        ("https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png", 14, "Terrarium ~2m",  "terrarium"),
-        ("https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png", 13, "Terrarium ~5m",  "terrarium"),
-        ("https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png", 12, "Terrarium ~10m", "terrarium"),
+        (_TERRARIUM_URL, 14, "Terrarium zoom 14", "terrarium"),
+        (_TERRARIUM_URL, 13, "Terrarium zoom 13", "terrarium"),
+        (_TERRARIUM_URL, 12, "Terrarium zoom 12", "terrarium"),
     ]
 
     def __init__(self):
