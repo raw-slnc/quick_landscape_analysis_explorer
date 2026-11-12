@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Named, portable terrain-analysis ZIP packages."""
 
+import datetime
 import json
 import os
 import re
@@ -137,7 +138,7 @@ def list_packages(project_directory):
     if not os.path.isdir(folder):
         return []
     packages = []
-    for file_name in sorted(os.listdir(folder), key=str.casefold):
+    for file_name in os.listdir(folder):
         if not file_name.lower().endswith(".zip"):
             continue
         path = os.path.join(folder, file_name)
@@ -146,7 +147,20 @@ def list_packages(project_directory):
         except PackageError:
             continue
         packages.append((manifest["analysis_name"], path, manifest))
+    # Newest analysis first (renaming does not change the order).
+    packages.sort(key=lambda package: package[0].casefold())
+    packages.sort(key=lambda package: _made_at(package[1], package[2]), reverse=True)
     return packages
+
+
+def _made_at(path, manifest):
+    """When the analysis was made (seconds since 1970), for sorting."""
+
+    try:
+        return datetime.datetime.fromisoformat(manifest.get("created_at", "")).timestamp()
+    except (TypeError, ValueError):
+        # A missing or unreadable time: the file's modification time instead.
+        return os.path.getmtime(path)
 
 
 def vsi_path(package_path_value, member):

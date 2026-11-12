@@ -100,6 +100,7 @@ from .core import packages
 from .i18n import ENGLISH, JAPANESE, is_japanese, set_language, tr
 from .layer_combo import LayerTreeOrderComboBox, LayerVisibilityButton
 from .preview_scale import ScaleLimitSuspender
+from . import preview_tiles
 from .core import session
 from .management_panel import AnalysisManagementPanel
 from .order_arrows import LayerOrderArrows
@@ -236,6 +237,84 @@ class ASeriesPortraitPreview(QWidget):
         self.analysisGuide.setVisible(bool(visible))
         if visible:
             self.analysisGuide.raise_()
+
+
+class DpiComboBox(QComboBox):
+    """Resolution choices, with "Custom..." at the bottom to type one in.
+
+    A typed-in value joins the list in order. dpiChosen is emitted for the
+    user's choices only (for storing them).
+    """
+
+    dpiChosen = pyqtSignal(int)
+
+    def __init__(self, choices, default, parent=None):
+        super().__init__(parent)
+        self._choices = tuple(choices)
+        for dpi in choices:
+            text = "{} dpi".format(dpi)
+            if dpi == default:
+                text += tr(" (QLAE default)", " （QLAE既定値）")
+            self.addItem(text, dpi)
+        self.addItem(tr("Custom...", "自由設定…"), None)
+        self._lastIndex = 0
+        self.setDpi(default)
+        self.activated.connect(self._activated)
+
+    def dpi(self):
+        value = self.currentData()
+        if isinstance(value, int):
+            return value
+        # "Custom..." is current only while its dialog is open.
+        return self.itemData(self._lastIndex)
+
+    def setDpi(self, dpi):
+        dpi = int(dpi)
+        if not CUSTOM_DPI_RANGE[0] <= dpi <= CUSTOM_DPI_RANGE[1]:
+            return
+        self._remove_typed_in(keep=dpi)
+        index = self.findData(dpi)
+        if index < 0:
+            index = self.count() - 1  # before "Custom..."
+            for row in range(self.count() - 1):
+                if self.itemData(row) > dpi:
+                    index = row
+                    break
+            self.insertItem(index, "{} dpi".format(dpi), dpi)
+        self._lastIndex = index
+        self.setCurrentIndex(index)
+
+    def _activated(self, index):
+        if self.itemData(index) is not None:
+            value = self.itemData(index)
+            # A typed-in value leaves the list once another one is chosen.
+            self._remove_typed_in(keep=value)
+            self._lastIndex = self.findData(value)
+            self.setCurrentIndex(self._lastIndex)
+            self.dpiChosen.emit(value)
+            return
+        value, ok = QInputDialog.getInt(
+            self,
+            tr("Resolution", "解像度"),
+            tr("Resolution (dpi):", "解像度（dpi）："),
+            self.itemData(self._lastIndex),
+            CUSTOM_DPI_RANGE[0],
+            CUSTOM_DPI_RANGE[1],
+        )
+        if ok:
+            self.setDpi(value)
+            self.dpiChosen.emit(value)
+        else:
+            self.setCurrentIndex(self._lastIndex)
+
+    def _remove_typed_in(self, keep):
+        current = self.itemData(self._lastIndex)
+        for row in range(self.count() - 2, -1, -1):
+            value = self.itemData(row)
+            if value not in self._choices and value != keep:
+                self.removeItem(row)
+        if current is not None and self.findData(current) >= 0:
+            self._lastIndex = self.findData(current)
 
 
 class GroupedSourceComboBox(QComboBox):
@@ -385,6 +464,14 @@ class LandscapeExplorerDialog(QDialog):
         self._previewLayersTimer.setSingleShot(True)
         self._previewLayersTimer.setInterval(0)
         self._previewLayersTimer.timeout.connect(self._update_preview_layers)
+        # The project layers in the preview, top first. In analysis
+        # management the canvas draws XYZ tile layers from copies fixed to the
+        # export's zoom level (see preview_tiles); exports and the temporary
+        # changes use these project layers.
+        self._previewSourceLayers = []
+        # source layer id -> (zoom, copy), and style watches on the sources
+        self._previewTileCopies = {}
+        self._tileCopyWatches = {}
         # Analysis management: the package being managed, the explore view
         # to return to, and choices waiting for a rebuilt (language) window.
         self._managementPackagePath = None
@@ -392,6 +479,9 @@ class LandscapeExplorerDialog(QDialog):
         self._managementMargin = False
         self._explorePreviewView = None
         self._pendingManagement = None
+        # Set when this window replaces one in another language: the user
+        # was already asked about the previous analysis.
+        self._rebuiltForLanguage = False
         self._aoiChoicesInitialized = False
         self._previewInitialized = False
         self._previewLandscape = False
@@ -506,19 +596,28 @@ class LandscapeExplorerDialog(QDialog):
         stored_dpi, dpi_ok = QgsProject.instance().readNumEntry(
             _PROJECT_SCOPE, _EXPORT_DPI_KEY, DEFAULT_EXPORT_DPI
         )
-        if dpi_ok and stored_dpi in EXPORT_DPI_CHOICES:
-            self.exportDpiCombo.setCurrentIndex(self.exportDpiCombo.findData(stored_dpi))
+        if dpi_ok:
+            self.exportDpiCombo.setDpi(stored_dpi)
+        stored_geopdf_dpi, geopdf_dpi_ok = QgsProject.instance().readNumEntry(
+            _PROJECT_SCOPE, _GEOPDF_DPI_KEY, DEFAULT_GEOPDF_DPI
+        )
+        if geopdf_dpi_ok:
+            self.geoPdfDpiCombo.setDpi(stored_geopdf_dpi)
         self.paperSizeCombo.currentIndexChanged.connect(self._paper_changed)
         self.paperSizeCombo.activated.connect(
             lambda _i: QgsProject.instance().writeEntry(
                 _PROJECT_SCOPE, _PAPER_KEY, self._paper_name()
             )
         )
-        self.exportDpiCombo.activated.connect(
-            lambda _i: QgsProject.instance().writeEntry(
-                _PROJECT_SCOPE, _EXPORT_DPI_KEY, int(self.exportDpiCombo.currentData())
-            )
+        self.exportDpiCombo.dpiChosen.connect(
+            lambda dpi: QgsProject.instance().writeEntry(_PROJECT_SCOPE, _EXPORT_DPI_KEY, dpi)
         )
+        self.geoPdfDpiCombo.dpiChosen.connect(
+            lambda dpi: QgsProject.instance().writeEntry(_PROJECT_SCOPE, _GEOPDF_DPI_KEY, dpi)
+        )
+        # The preview shows the paper output: its tile maps follow the
+        # GeoPDF resolution.
+        self.geoPdfDpiCombo.currentIndexChanged.connect(self._previewLayersTimer.start)
         self.managementPanel.exitRequested.connect(self._finish_management_by_user)
         self.managementPanel.renameRequested.connect(self._rename_analysis)
         self.managementPanel.layersChanged.connect(self._update_preview_layers)
@@ -769,23 +868,37 @@ class LandscapeExplorerDialog(QDialog):
         self._imageTask = None
         self._imageTaskLayers = []
         grid.addWidget(self.exportGeoPdfButton, 0, 0)
-        grid.addWidget(self.exportLayoutButton, 0, 1)
+        grid.addWidget(self.exportImageButton, 0, 1)
         grid.addWidget(self.exportLayersButton, 1, 0)
-        grid.addWidget(self.exportImageButton, 1, 1)
-        dpi_row = QHBoxLayout()
-        dpi_row.addWidget(QLabel(tr("Resolution: GeoPDF / Image", "解像度設定：GeoPDF/画像"), box))
-        self.exportDpiCombo = QComboBox(box)
-        for dpi in EXPORT_DPI_CHOICES:
-            self.exportDpiCombo.addItem("{} dpi".format(dpi), dpi)
-        self.exportDpiCombo.setCurrentIndex(self.exportDpiCombo.findData(DEFAULT_EXPORT_DPI))
-        self.exportDpiCombo.setToolTip(
+        grid.addWidget(self.exportLayoutButton, 1, 1)
+        # One resolution each, in the columns of their buttons. A QGIS print
+        # layout keeps its own export resolution (300 dpi unless changed).
+
+        def dpi_column(label, default, tooltip):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label, box))
+            combo = DpiComboBox(EXPORT_DPI_CHOICES, default, box)
+            combo.setToolTip(tooltip)
+            row.addWidget(combo, 1)
+            return row, combo
+
+        geopdf_row, self.geoPdfDpiCombo = dpi_column(
+            tr("GeoPDF resolution", "GeoPDF 解像度"),
+            DEFAULT_GEOPDF_DPI,
             tr(
-                "Resolution of image parts (hillshade, CS Map, base map) in the export.",
-                "書き出しの画像部分（陰影起伏・CS立体図・ベースマップなど）の解像度です。",
-            )
+                "Resolution of the GeoPDF's image parts (hillshade, base map, ...). "
+                "The preview's tile maps follow it.",
+                "GeoPDF の画像部分（陰影起伏・ベースマップなど）の解像度です。"
+                "プレビューのタイル地図もこれに合わせます。",
+            ),
         )
-        dpi_row.addWidget(self.exportDpiCombo, 1)
-        grid.addLayout(dpi_row, 2, 0, 1, 2)
+        image_row, self.exportDpiCombo = dpi_column(
+            tr("Image resolution", "画像 解像度"),
+            DEFAULT_EXPORT_DPI,
+            tr("Resolution of the exported image.", "書き出す画像の解像度です。"),
+        )
+        grid.addLayout(geopdf_row, 2, 0)
+        grid.addLayout(image_row, 2, 1)
         return box
 
     def _build_control_panel(self):
@@ -1067,7 +1180,7 @@ class LandscapeExplorerDialog(QDialog):
         if self._pendingManagement:
             # Queued after the explore view restore above.
             QTimer.singleShot(0, self._resume_pending_management)
-        else:
+        elif not self._rebuiltForLanguage:
             QTimer.singleShot(0, self._offer_previous_analysis)
 
     def _offer_previous_analysis(self):
@@ -1368,6 +1481,11 @@ class LandscapeExplorerDialog(QDialog):
         # value so the scale shown can still be the scale on the paper.
         self._desiredMagnification = factor
         if abs(factor - canvas.magnificationFactor()) > 1e-4:
+            # The canvas reuses layer and label images while the extent and
+            # the map units per pixel stay the same, whatever the DPI
+            # (QgsMapRendererCache::updateParameters in 3.44): with the extent
+            # fixed, labels kept the earlier sheet's size. Draw them anew.
+            canvas.clearCache()
             canvas.setMagnificationFactor(factor)
 
     def _set_preview_extent(self, extent):
@@ -1393,30 +1511,104 @@ class LandscapeExplorerDialog(QDialog):
                 self._set_preview_extent(extent)
         self.previewCanvas.refresh()
         self._update_preview_status()
+        # The tile layers' zoom follows the new scale.
+        self._previewLayersTimer.start()
+
+    def _recommended_dpi(self):
+        """The finest resolution, in 50 dpi steps, whose sheet stays within
+        LARGE_EXPORT_PIXELS."""
+
+        width_mm, height_mm = self._paper_size_mm()
+        square_inches = (width_mm / 25.4) * (height_mm / 25.4)
+        finest = math.sqrt(LARGE_EXPORT_PIXELS / square_inches)
+        return max(RECOMMENDED_DPI_STEP, int(finest // RECOMMENDED_DPI_STEP) * RECOMMENDED_DPI_STEP)
+
+    def _checked_export_dpi(self, combo, title, size_text, allow_as_is):
+        """The resolution to export at, or None to stop.
+
+        Above LARGE_EXPORT_PIXELS the user chooses: as it is (unless over
+        the plugin's own limit, allow_as_is False), the recommended
+        resolution (which then becomes the setting), or cancel.
+        """
+
+        dpi = combo.dpi()
+        width_mm, height_mm = self._paper_size_mm()
+        width_px = int(round(width_mm / 25.4 * dpi))
+        height_px = int(round(height_mm / 25.4 * dpi))
+        if allow_as_is and width_px * height_px <= LARGE_EXPORT_PIXELS:
+            return dpi
+        recommended = self._recommended_dpi()
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(title)
+        box.setText(size_text.format(self._paper_name(), dpi, width_px, height_px))
+        box.setInformativeText(
+            tr(
+                "This takes a long time and a lot of memory."
+                if allow_as_is
+                else "The plugin limits the size of exports.",
+                "時間とメモリを多く使います。"
+                if allow_as_is
+                else "プラグインは書き出しに制限を設けています。",
+            )
+        )
+        as_is = None
+        if allow_as_is:
+            as_is = box.addButton(
+                tr("Export as it is", "このまま書き出す"), QMessageBox.ButtonRole.AcceptRole
+            )
+        use_recommended = box.addButton(
+            tr("Export at {} dpi (recommended)", "推奨値（{} dpi）で書き出す").format(recommended),
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(use_recommended)
+        _keep_message_lines(box)
+        box.exec()
+        clicked = box.clickedButton()
+        if as_is is not None and clicked is as_is:
+            return dpi
+        if clicked is use_recommended:
+            combo.setDpi(recommended)
+            combo.dpiChosen.emit(recommended)
+            return recommended
+        return None
+
+    def _show_status(self, text):
+        """Put text in the Status panel and draw it now.
+
+        Exports replace the previous result as soon as they start, and a
+        step that keeps QGIS busy (the GeoPDF) would otherwise leave the
+        old text on screen until it ends.
+        """
+
+        self.resultEdit.setPlainText(text)
+        self.resultEdit.viewport().repaint()
 
     def _export_geopdf(self, *args):
         """Save exactly what the preview shows as a GeoPDF on the paper size."""
 
         del args
-        dpi = self.exportDpiCombo.currentData() or DEFAULT_EXPORT_DPI
+        self._show_status(tr("Exporting a GeoPDF...", "GeoPDFを書き出します…"))
+        cancelled = tr("The GeoPDF export was cancelled.", "GeoPDFの書き出しを取り消しました。")
+        if not self._confirm_wms_export():
+            self._show_status(cancelled)
+            return
+        dpi = self._checked_export_dpi(
+            self.geoPdfDpiCombo,
+            tr("Large GeoPDF", "大きなGeoPDF"),
+            tr(
+                "{} at {} dpi makes images of {:,} × {:,} pixels.",
+                "{}・{} dpiでは画像部分が{:,} × {:,}画素になります。",
+            ),
+            allow_as_is=True,
+        )
+        if dpi is None:
+            self._show_status(cancelled)
+            return
         width_mm, height_mm = self._paper_size_mm()
         width_px = int(round(width_mm / 25.4 * dpi))
         height_px = int(round(height_mm / 25.4 * dpi))
-        if width_px * height_px > LARGE_EXPORT_PIXELS:
-            answer = QMessageBox.question(
-                self,
-                tr("Large GeoPDF", "大きなGeoPDF"),
-                tr(
-                    "{} at {} dpi makes images of {:,} × {:,} pixels. This can take "
-                    "a long time and a lot of memory. Continue?",
-                    "{}・{} dpiでは画像部分が{:,} × {:,}画素になります。時間とメモリを"
-                    "多く使います。続けますか？",
-                ).format(self._paper_name(), dpi, width_px, height_px),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                return
         settings = QgsSettings()
         name = self.managementPanel.analysisNameLabel.text() or "preview"
         start_dir = settings.value(
@@ -1429,6 +1621,7 @@ class LandscapeExplorerDialog(QDialog):
             "PDF (*.pdf)",
         )
         if not path:
+            self._show_status(cancelled)
             return
         if not path.lower().endswith(".pdf"):
             path += ".pdf"
@@ -1439,7 +1632,7 @@ class LandscapeExplorerDialog(QDialog):
         del width_px, height_px
         self._ensure_scale_suspension()
         self.exportGeoPdfButton.setEnabled(False)
-        self.resultEdit.setPlainText(
+        self._show_status(
             tr("Making GeoPDF ({}, {} dpi)...", "GeoPDFを作成しています（{}・{} dpi）…").format(
                 self._paper_name(), dpi
             )
@@ -1451,7 +1644,7 @@ class LandscapeExplorerDialog(QDialog):
                 path,
                 self._paper_size_mm(),
                 dpi,
-                self.previewCanvas.layers(),
+                self._previewSourceLayers,
                 self.previewCanvas.extent(),
                 self.previewCanvas.mapSettings().destinationCrs(),
             )
@@ -1481,6 +1674,7 @@ class LandscapeExplorerDialog(QDialog):
         package_path = self._managementPackagePath
         if not package_path:
             return
+        self._show_status(tr("Exporting the layers...", "レイヤーを書き出しています…"))
         project = QgsProject.instance()
         folder = packages.export_directory(package_path)
         folder_key = os.path.normcase(os.path.abspath(folder)) + os.sep
@@ -1589,7 +1783,11 @@ class LandscapeExplorerDialog(QDialog):
         project = QgsProject.instance()
         layers = []
         analysis = []
-        for _key, combo in self._optional_layer_combos():
+        # The preview's order: optional 1, optional 2, overlay, analysis,
+        # base map.
+        for combo in [c for _key, c in self._optional_layer_combos()] + [
+            self.overlayLayerCombo
+        ]:
             layer = combo.currentLayer()
             if layer is not None and layer not in layers:
                 layers.append(layer)
@@ -1598,10 +1796,9 @@ class LandscapeExplorerDialog(QDialog):
             if layer is not None and layer not in layers:
                 layers.append(layer)
                 analysis.append(layer)
-        for combo in (self.overlayLayerCombo, self.baseMapCombo):
-            layer = combo.currentLayer()
-            if layer is not None and layer not in layers:
-                layers.append(layer)
+        layer = self.baseMapCombo.currentLayer()
+        if layer is not None and layer not in layers:
+            layers.append(layer)
         return layers, analysis
 
     def _export_print_layout(self, *args):
@@ -1611,6 +1808,7 @@ class LandscapeExplorerDialog(QDialog):
         package_path = self._managementPackagePath
         if not package_path:
             return
+        self._show_status(tr("Making the print layout...", "印刷レイアウトを作成します…"))
         try:
             manifest = packages.read_manifest(package_path)
         except packages.PackageError:
@@ -1632,8 +1830,9 @@ class LandscapeExplorerDialog(QDialog):
             credits=_layout_credits(manifest, layers, legend_layers),
             summary=_safe_area_summary(package_path, manifest),
         )
-        if status:
-            self.resultEdit.setPlainText(status)
+        self._show_status(status or tr(
+            "The print layout was not made.", "印刷レイアウトの作成を取り消しました。"
+        ))
 
     def _export_image(self, *args):
         """Save exactly what the preview shows as an image on the paper size."""
@@ -1641,35 +1840,30 @@ class LandscapeExplorerDialog(QDialog):
         del args
         if self._imageTask is not None:
             return
-        dpi = self.exportDpiCombo.currentData() or DEFAULT_EXPORT_DPI
+        self._show_status(tr("Exporting an image...", "画像を書き出します…"))
+        cancelled = tr("The image export was cancelled.", "画像の書き出しを取り消しました。")
+        if not self._confirm_wms_export():
+            self._show_status(cancelled)
+            return
         width_mm, height_mm = self._paper_size_mm()
+        dpi = self.exportDpiCombo.dpi()
+        pixels = round(width_mm / 25.4 * dpi) * round(height_mm / 25.4 * dpi)
+        dpi = self._checked_export_dpi(
+            self.exportDpiCombo,
+            tr("Large image", "大きな画像"),
+            tr(
+                "{} at {} dpi makes an image of {:,} × {:,} pixels.",
+                "{}・{} dpiでは{:,} × {:,}画素の画像になります。",
+            ),
+            # The plugin's own limit for one image (4 bytes a pixel); not a
+            # limit of Qt or QGIS.
+            allow_as_is=pixels * 4 < MAX_IMAGE_BYTES,
+        )
+        if dpi is None:
+            self._show_status(cancelled)
+            return
         width_px = int(round(width_mm / 25.4 * dpi))
         height_px = int(round(height_mm / 25.4 * dpi))
-        if width_px * height_px * 4 >= MAX_IMAGE_BYTES:
-            self.resultEdit.setPlainText(
-                tr(
-                    "{} at {} dpi would be {:,} × {:,} pixels, too large for one image. "
-                    "Choose a lower resolution.",
-                    "{}・{} dpiでは{:,} × {:,}画素になり、1枚の画像にできません。"
-                    "解像度を下げてください。",
-                ).format(self._paper_name(), dpi, width_px, height_px)
-            )
-            return
-        if width_px * height_px > LARGE_EXPORT_PIXELS:
-            answer = QMessageBox.question(
-                self,
-                tr("Large image", "大きな画像"),
-                tr(
-                    "{} at {} dpi makes an image of {:,} × {:,} pixels. This can take "
-                    "a long time and a lot of memory. Continue?",
-                    "{}・{} dpiでは{:,} × {:,}画素の画像になります。時間とメモリを"
-                    "多く使います。続けますか？",
-                ).format(self._paper_name(), dpi, width_px, height_px),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                return
         settings = QgsSettings()
         name = self.managementPanel.analysisNameLabel.text() or "preview"
         start_dir = settings.value(
@@ -1683,6 +1877,7 @@ class LandscapeExplorerDialog(QDialog):
             filters,
         )
         if not path:
+            self._show_status(cancelled)
             return
         extension, file_format = next(
             ((ext, fmt) for label, ext, fmt in IMAGE_FORMATS if label == chosen),
@@ -1704,7 +1899,7 @@ class LandscapeExplorerDialog(QDialog):
         self._ensure_scale_suspension()
         source_settings = self.previewCanvas.mapSettings()
         # Copies, so the task keeps drawing even if the preview changes.
-        self._imageTaskLayers = [layer.clone() for layer in self.previewCanvas.layers()]
+        self._imageTaskLayers = [layer.clone() for layer in self._previewSourceLayers]
         settings = QgsMapSettings()
         settings.setLayers(self._imageTaskLayers)
         settings.setDestinationCrs(source_settings.destinationCrs())
@@ -2238,10 +2433,12 @@ class LandscapeExplorerDialog(QDialog):
         self.watershedCheck = QCheckBox(tr("Catchment map", "流域範囲図"), box)
         self.watershedCheck.setChecked(False)
         layout.addWidget(self.watershedCheck)
-        # An empty row under the checks keeps room for the DEM on the right.
-        dem_row = QWidget(box)
-        dem_row.setFixedHeight(self.watershedCheck.sizeHint().height())
-        layout.addWidget(dem_row)
+        # Empty rows under the checks keep room for the DEM and the base map
+        # on the right.
+        for _row in range(2):
+            spacer_row = QWidget(box)
+            spacer_row.setFixedHeight(self.watershedCheck.sizeHint().height())
+            layout.addWidget(spacer_row)
         layout.addStretch(1)
         # Checks are in run order; the layers come out in drawing order.
         self.layerOrderArrows = LayerOrderArrows(
@@ -2259,6 +2456,8 @@ class LandscapeExplorerDialog(QDialog):
                 ("hillshade", tr("Hillshade", "陰影起伏")),
                 ("cs_map", tr("CS Map", "CS立体図")),
                 ("dem", tr("DEM", "DEM")),
+                # Not made by the analysis: drawn under its layers.
+                ("base_map", tr("Base map", "Base map")),
             ],
             box,
         )
@@ -2597,6 +2796,8 @@ class LandscapeExplorerDialog(QDialog):
             # never saw it. Close as Esc does everywhere else in the window.
             self.reject()
             return True
+        if watched is self.previewCanvas and event.type() == QEvent.Type.Show:
+            self._prepare_preview_show()
         if (
             self._in_management()
             and event.type() in _PREVIEW_NAVIGATION_EVENTS
@@ -2609,6 +2810,24 @@ class LandscapeExplorerDialog(QDialog):
             # around. Swallow wheel zoom, drag pan and keyboard navigation.
             return True
         return super().eventFilter(watched, event)
+
+    def _prepare_preview_show(self):
+        """Let the preview keep the paper's DPI when it is shown again.
+
+        When the canvas is shown, QGIS sets the screen DPI but keeps the
+        magnification (QgsMapCanvas::showEvent in 3.44), so the two no longer
+        match and QGIS's lowest magnification (0.1) then stops the DPI from
+        going down to the paper's: measured A0 at 96 dpi instead of 15 dpi,
+        labels drawn at screen size. This runs before the canvas handles the
+        event: back to magnification 1 here, and the paper's magnification
+        and the extent are set again after (as after a resize).
+        """
+
+        canvas = self.previewCanvas
+        if abs(canvas.magnificationFactor() - 1.0) < 1e-9:
+            return
+        self._queue_preview_extent_restore(QgsRectangle(canvas.extent()))
+        canvas.setMagnificationFactor(1.0)
 
     def _enter_management(self, package_path, checked_ids=None):
         """Switch the right panel and fix the preview to one analysis."""
@@ -2780,6 +2999,8 @@ class LandscapeExplorerDialog(QDialog):
         self._set_preview_extent(extent)
         self.previewCanvas.refresh()
         self._update_preview_status()
+        # The tile layers' zoom follows the fitted scale.
+        self._previewLayersTimer.start()
 
     def _refresh_management_layers(self):
         """Rebuild the list after layers were removed or re-added."""
@@ -2918,9 +3139,10 @@ class LandscapeExplorerDialog(QDialog):
         # "Use preview map extent" (only its selection is cleared then).
         aoi_layer = None if self._in_management() else self.aoiLayerCombo.currentLayer()
         # Canvas order is top to bottom. Analysis management: optional 1,
-        # optional 2, checked analysis layers. Otherwise the AOI. Then the
-        # overlay and the base map. These are the project layers themselves,
-        # drawn with their own styles; a layer is listed only once.
+        # optional 2, the overlay, checked analysis layers, the base map.
+        # Otherwise: the AOI, the overlay, the base map. These are the project
+        # layers themselves, drawn with their own styles; a layer is listed
+        # only once.
         layers = []
 
         def add(layer):
@@ -2933,17 +3155,80 @@ class LandscapeExplorerDialog(QDialog):
                 layer = _shown_in_layer_panel(combo.currentLayer())
                 if layer is not overlay and layer is not base_map:
                     add(layer)
+            add(overlay)
             for layer_id in self.managementPanel.checkedLayerIds():
                 add(project.mapLayer(layer_id))
-        if aoi_layer is not overlay:
-            add(aoi_layer)
-        add(overlay)
+        else:
+            if aoi_layer is not overlay:
+                add(aoi_layer)
+            add(overlay)
         if base_map is not aoi_layer:
             add(base_map)
-        self.previewCanvas.setLayers(layers)
+        self._previewSourceLayers = list(layers)
+        drawn = [self._preview_tile_layer(layer) for layer in layers]
+        self.previewCanvas.setLayers(drawn)
+        self._drop_unused_tile_copies(drawn)
         self._update_scale_suspension()
         self.previewCanvas.refresh()
         self._refresh_preview_polygon()
+
+    def _preview_tile_layer(self, layer):
+        """The layer to draw: in analysis management an XYZ tile layer is
+        drawn from a copy fixed to the zoom level of the export."""
+
+        if not self._in_management() or not preview_tiles.is_xyz_layer(layer):
+            return layer
+        zoom = preview_tiles.export_zoom(
+            layer,
+            self.previewCanvas.extent(),
+            self.previewCanvas.mapSettings().destinationCrs(),
+            self._paper_size_mm()[0],
+            # The preview shows the paper output, the GeoPDF.
+            self.geoPdfDpiCombo.dpi(),
+        )
+        if zoom is None:
+            return layer
+        cached = self._previewTileCopies.get(layer.id())
+        if cached is not None and cached[0] == zoom:
+            return cached[1]
+        copy = preview_tiles.fixed_zoom_copy(layer, zoom)
+        if copy is None:
+            return layer
+        if cached is not None:
+            cached[1].deleteLater()
+        self._previewTileCopies[layer.id()] = (zoom, copy)
+        self._watch_tile_source(layer)
+        return copy
+
+    def _drop_unused_tile_copies(self, drawn):
+        for source_id, (_zoom, copy) in list(self._previewTileCopies.items()):
+            if copy not in drawn:
+                del self._previewTileCopies[source_id]
+                copy.deleteLater()
+                self._unwatch_tile_source(source_id)
+
+    def _watch_tile_source(self, layer):
+        """A style change of the source is copied on the next update."""
+
+        if layer.id() in self._tileCopyWatches:
+            return
+
+        def changed(*_args, layer_id=layer.id()):
+            entry = self._previewTileCopies.pop(layer_id, None)
+            if entry is not None:
+                QTimer.singleShot(0, entry[1].deleteLater)
+            self._previewLayersTimer.start()
+
+        layer.styleChanged.connect(changed)
+        self._tileCopyWatches[layer.id()] = (layer, changed)
+
+    def _unwatch_tile_source(self, layer_id):
+        layer, slot = self._tileCopyWatches.pop(layer_id, (None, None))
+        if layer is not None and not sip.isdeleted(layer):
+            try:
+                layer.styleChanged.disconnect(slot)
+            except (TypeError, RuntimeError):
+                pass
 
     def _update_scale_suspension(self):
         """Make the plugin's temporary changes to the project layers only
@@ -2961,7 +3246,7 @@ class LandscapeExplorerDialog(QDialog):
         for button, in_use in self._visibility_buttons():
             button.setApplied(in_front and (in_use or managing))
         if in_front:
-            self._scaleSuspender.suspend(self.previewCanvas.layers())
+            self._scaleSuspender.suspend(self._previewSourceLayers)
         else:
             self._scaleSuspender.restore()
 
@@ -2979,7 +3264,7 @@ class LandscapeExplorerDialog(QDialog):
     def _ensure_scale_suspension(self):
         """Before an export: the save dialog may have just taken the focus."""
 
-        self._scaleSuspender.suspend(self.previewCanvas.layers())
+        self._scaleSuspender.suspend(self._previewSourceLayers)
 
     def _sync_preview_from_main(self, *args):
         del args
@@ -3272,28 +3557,49 @@ class LandscapeExplorerDialog(QDialog):
         box.setDefaultButton(QMessageBox.StandardButton.Ok)
         hide_next = QCheckBox(tr("Don't show this again", "次回から表示しない"), box)
         box.setCheckBox(hide_next)
-        # QMessageBox picks its own width and wraps the text; give its text
-        # labels the width of the longest sentence so each stays on one line.
-        # The labels are found by Qt's internal names; if a Qt version names
-        # them differently, the box simply keeps its standard wrapping.
-        labels = [
-            label
-            for label in (
-                box.findChild(QLabel, "qt_msgbox_label"),
-                box.findChild(QLabel, "qt_msgbox_informativelabel"),
-            )
-            if label is not None
-        ]
-        if labels:
-            longest = max(
-                label.fontMetrics().horizontalAdvance(label.text()) for label in labels
-            )
-            for label in labels:
-                label.setMinimumWidth(longest + 8)
+        _keep_message_lines(box)
         if box.exec() != QMessageBox.StandardButton.Ok:
             return False
         if hide_next.isChecked():
             QgsSettings().setValue(TERRARIUM_NOTICE_HIDDEN_KEY, True)
+        return True
+
+    def _confirm_wms_export(self):
+        """Before an export: warn about plain WMS layers in the preview.
+
+        Some WMS servers limit the image size of one request (WIDTH/HEIGHT).
+        QGIS splits large requests by the limit the server announces, or
+        2000 pixels; a smaller limit the server does not announce makes the
+        layer drop out of the output while the export still succeeds. QGIS's
+        layout designer warns the same way. XYZ and WMTS tiles are fetched
+        tile by tile and are not affected. Returns whether to go on.
+        """
+
+        names = [layer.name() for layer in self._previewSourceLayers if _is_plain_wms(layer)]
+        if not names or QgsSettings().value(WMS_EXPORT_NOTICE_HIDDEN_KEY, False, type=bool):
+            return True
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(tr("WMS layers in the preview", "プレビューにWMSレイヤーがあります"))
+        box.setText(tr(
+            "Some WMS servers limit the image size of one request.",
+            "WMSサーバーの中には、1回の要求で返せる画像の大きさに上限があるものがあります。",
+        ))
+        box.setInformativeText(tr(
+            "Beyond the limit the layer is left out of the output:\n{}",
+            "上限を超えると、そのレイヤーは出力に入りません：\n{}",
+        ).format("\n".join(names)))
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.Ok)
+        hide_next = QCheckBox(tr("Don't show this again", "次回から表示しない"), box)
+        box.setCheckBox(hide_next)
+        _keep_message_lines(box)
+        if box.exec() != QMessageBox.StandardButton.Ok:
+            return False
+        if hide_next.isChecked():
+            QgsSettings().setValue(WMS_EXPORT_NOTICE_HIDDEN_KEY, True)
         return True
 
     def _dem_source_activated(self, *args):
@@ -4070,6 +4376,7 @@ class LandscapeExplorerDialog(QDialog):
             self._previewInitialized = False
             self._pendingPreviewView = dict(state)
         self._pendingManagement = state.get("management")
+        self._rebuiltForLanguage = True
 
     def cleanup(self, clear_analysis_layers=False):
         if clear_analysis_layers:
@@ -4110,6 +4417,11 @@ class LandscapeExplorerDialog(QDialog):
         self.previewRubber.reset(Qgis.GeometryType.Polygon)
         self.localDemRubber.reset(Qgis.GeometryType.Polygon)
         self.previewCanvas.setLayers([])
+        for source_id in list(self._tileCopyWatches):
+            self._unwatch_tile_source(source_id)
+        for _zoom, copy in self._previewTileCopies.values():
+            copy.deleteLater()
+        self._previewTileCopies = {}
         # Put the project layers' scale limits back and stop following the
         # layer panel.
         self._scaleSuspender.restore()
@@ -4315,11 +4627,18 @@ PAPER_SIZES_MM = {
     "A0": (841, 1189),
 }
 DEFAULT_PAPER = "A4"
-EXPORT_DPI_CHOICES = (150, 200, 300, 600)
+EXPORT_DPI_CHOICES = (96, 150, 200, 300, 600)
+# Range for a resolution typed in with "Custom...": QGIS's own (map export
+# dialog and layout export resolution).
+CUSTOM_DPI_RANGE = (1, 3000)
+# The recommended resolution is rounded down to these steps.
+RECOMMENDED_DPI_STEP = 50
 DEFAULT_EXPORT_DPI = 200
-# Above this many pixels per image the export asks first (A2 at 600 dpi is
-# about 136 million; A0 at 600 dpi about 560 million).
-LARGE_EXPORT_PIXELS = 120_000_000
+# The GeoPDF starts at the default export resolution of a QGIS print layout.
+DEFAULT_GEOPDF_DPI = 300
+# Above this many pixels per image the export asks first, offering the
+# recommended resolution (at 300 dpi: A1 is about 70 million, A2 35 million).
+LARGE_EXPORT_PIXELS = 60_000_000
 # Field map app (PWA) that opens the GeoPDF export; the overview page links
 # on to the app itself (https://avid.mokuren.ne.jp/fieldmap/).
 AVID_MAPS_URL = "https://avid.mokuren.ne.jp/avidmaps/system_overview.php"
@@ -4341,6 +4660,7 @@ def _style_without_custom_properties():
 
 # The one print layout the plugin keeps (each analysis replaces it).
 TERRARIUM_NOTICE_HIDDEN_KEY = "qlae/terrarium_notice_hidden"
+WMS_EXPORT_NOTICE_HIDDEN_KEY = "qlae/wms_export_notice_hidden"
 WINDOW_GEOMETRY_KEY = "qlae/window_geometry"
 WINDOW_MAXIMIZED_KEY = "qlae/window_maximized"
 
@@ -4352,7 +4672,9 @@ IMAGE_FORMATS = (
     ("JPEG (*.jpg *.jpeg)", ".jpg", "JPG"),
     ("TIFF (*.tif *.tiff)", ".tif", "TIF"),
 )
-# One QImage (4 bytes per pixel) must stay under 2 GB.
+# The plugin's own limit for one exported image (4 bytes per pixel), about
+# 2 GB. Qt itself (5.15 / 6.8) does not limit an image's total size; this
+# keeps the memory one export takes within bounds.
 MAX_IMAGE_BYTES = 2 ** 31 - 1
 
 
@@ -5260,6 +5582,42 @@ def _write_geopdf(path, paper_mm, dpi, layers, extent, crs):
     return False, str(result)
 
 
+def _keep_message_lines(box):
+    """Keep each line of a QMessageBox's text on one line.
+
+    QMessageBox picks its own width and wraps the text; its text labels get
+    the width of their longest line. The labels are found by Qt's internal
+    names; if a Qt version names them differently, the box simply keeps its
+    standard wrapping.
+    """
+
+    labels = [
+        label
+        for label in (
+            box.findChild(QLabel, "qt_msgbox_label"),
+            box.findChild(QLabel, "qt_msgbox_informativelabel"),
+        )
+        if label is not None
+    ]
+    if labels:
+        longest = max(
+            label.fontMetrics().horizontalAdvance(line)
+            for label in labels
+            for line in label.text().split("\n")
+        )
+        for label in labels:
+            label.setMinimumWidth(longest + 8)
+
+
+def _is_plain_wms(layer):
+    """A WMS layer fetched as whole images (not XYZ or WMTS tiles)."""
+
+    if layer is None or layer.providerType() != "wms":
+        return False
+    source = layer.source()
+    return "type=xyz" not in source and "tileMatrixSet=" not in source
+
+
 def _shown_in_layer_panel(layer):
     """The layer if the QGIS layer panel shows it (parents included)."""
 
@@ -5421,6 +5779,7 @@ _AREA_POLYGON_KEY = "area/polygon_layer_id"
 _PREVIEW_ORIENTATION_KEY = "preview/orientation"
 _PAPER_KEY = "preview/paper"
 _EXPORT_DPI_KEY = "export/dpi"
+_GEOPDF_DPI_KEY = "export/geopdf_dpi"
 _OPTIONAL_LAYER_1_KEY = "management/optional_layer_1_id"
 _OPTIONAL_LAYER_2_KEY = "management/optional_layer_2_id"
 

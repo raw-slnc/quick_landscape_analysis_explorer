@@ -151,7 +151,7 @@ class LayerOrderArrows(QWidget):
         for key, row in rows.items():
             y_end = y_at(row)
             # Layer name.
-            painter.setPen(text_color if key in check_rows else muted)
+            painter.setPen(text_color)
             painter.drawText(
                 QPointF(label_x, y_end + (metrics.ascent() - metrics.descent()) / 2.0),
                 names[key],

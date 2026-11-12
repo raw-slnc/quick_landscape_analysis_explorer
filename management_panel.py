@@ -100,9 +100,9 @@ class AnalysisManagementPanel(QWidget):
         layers_layout.addWidget(self.layerTree)
         note = QLabel(
             tr(
-                "Checked layers are drawn below the optional layers and above the "
-                "overlay and base map, in this list's order.",
-                "チェックしたレイヤーは、オプショナルレイヤーの下、オーバーレイと"
+                "Checked layers are drawn below the optional layers and the "
+                "overlay and above the base map, in this list's order.",
+                "チェックしたレイヤーは、オプショナルレイヤーとオーバーレイの下、"
                 "ベースマップの上に、この一覧の順で描きます。",
             ),
             layers_box,
@@ -114,7 +114,7 @@ class AnalysisManagementPanel(QWidget):
 
         # Two extra project layers drawn on top of everything (e.g. forest
         # compartments or roads for the export). Drawing order, top first:
-        # optional 1, optional 2, analysis, overlay, base map.
+        # optional 1, optional 2, overlay, analysis, base map.
         optional_box = QGroupBox(tr("Optional layers", "オプショナルレイヤー"), self)
         # Both on one row, like the preview-layer row below.
         optional_row = QHBoxLayout(optional_box)
