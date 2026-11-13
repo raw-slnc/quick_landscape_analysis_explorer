@@ -16,6 +16,7 @@ from qgis.PyQt.QtCore import (
     QCoreApplication,
     QDir,
     QEvent,
+    QLineF,
     QProcess,
     QRect,
     QRectF,
@@ -76,6 +77,7 @@ from qgis.core import (
     QgsCoordinateTransform,
     QgsCsException,
     QgsDistanceArea,
+    QgsFeatureRequest,
     QgsGeometry,
     QgsLayerTreeGroup,
     QgsMapLayer,
@@ -120,8 +122,16 @@ from .terrain.styles import SLOPE_COLORS
 
 
 class PreviewAnalysisGuide(QWidget):
-    """Screen-fixed guide for the central three-fifths analysis-safe area."""
+    """Screen-fixed guide on the preview, which is the paper of the output.
 
+    "frame" (map-extent area): the central three-fifths, for fitting the
+    subject and its surroundings. "quarters" (polygon area): lines through
+    the middle, cutting the sheet into four, for the balance of the polygon
+    on the sheet (where its centre lies against the sheet's centre).
+    """
+
+    FRAME = "frame"
+    QUARTERS = "quarters"
     _FRAME_FRACTION = 3.0 / 5.0
     _LINE_WIDTH_POINTS = 0.3
     _UNDERLAY_WIDTH_POINTS = 0.7
@@ -132,7 +142,13 @@ class PreviewAnalysisGuide(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self._kind = self.FRAME
         self.hide()
+
+    def setKind(self, kind):
+        if kind != self._kind:
+            self._kind = kind
+            self.update()
 
     def paintEvent(self, event):
         del event
@@ -142,6 +158,23 @@ class PreviewAnalysisGuide(QWidget):
         line_width = self._LINE_WIDTH_POINTS * dpi / 72.0
         underlay_width = self._UNDERLAY_WIDTH_POINTS * dpi / 72.0
         painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        if self._kind == self.QUARTERS:
+            middle_x = self.width() / 2.0
+            middle_y = self.height() / 2.0
+            lines = (
+                QLineF(middle_x, 0.0, middle_x, float(self.height())),
+                QLineF(0.0, middle_y, float(self.width()), middle_y),
+            )
+            for color, width in ((self._UNDERLAY_COLOR, underlay_width),
+                                 (QColor(49, 49, 126), line_width)):
+                pen = QPen(color)
+                pen.setWidthF(width)
+                pen.setCosmetic(True)
+                painter.setPen(pen)
+                for line in lines:
+                    painter.drawLine(line)
+            return
 
         frame_width = self.width() * self._FRAME_FRACTION
         frame_height = self.height() * self._FRAME_FRACTION
@@ -243,7 +276,9 @@ class ASeriesPortraitPreview(QWidget):
         self.analysisGuide.setGeometry(target_geometry)
         self.analysisGuide.raise_()
 
-    def setAnalysisGuideVisible(self, visible):
+    def setAnalysisGuideVisible(self, visible, kind=None):
+        if kind is not None:
+            self.analysisGuide.setKind(kind)
         self.analysisGuide.setVisible(bool(visible))
         if visible:
             self.analysisGuide.raise_()
@@ -644,7 +679,14 @@ class LandscapeExplorerDialog(QDialog):
         self.closeButton.clicked.connect(self._close_and_clear)
         self.languageButton.clicked.connect(self._switch_language)
         self.aoiLayerCombo.layerChanged.connect(self._aoi_layer_changed)
-        self.selectedOnlyCheck.toggled.connect(self._refresh_preview_polygon)
+        self.selectedOnlyCheck.toggled.connect(self._selected_only_toggled)
+        # With all features in use, the outline shows those in view: drawn
+        # again (once the view settles) when the preview moves.
+        self._outlineTimer = QTimer(self)
+        self._outlineTimer.setSingleShot(True)
+        self._outlineTimer.setInterval(250)
+        self._outlineTimer.timeout.connect(self._refresh_preview_polygon)
+        self.previewCanvas.extentsChanged.connect(self._queue_outline_for_view)
         self.polygonAreaRadio.toggled.connect(self._area_mode_changed)
         self.mapExtentAreaRadio.toggled.connect(self._area_mode_changed)
         # Only a user switch clears the selection (not restoring a state).
@@ -779,9 +821,11 @@ class LandscapeExplorerDialog(QDialog):
         preview_layout.addWidget(self.previewFrame, 1)
 
         self.previewRubber = QgsRubberBand(self.previewCanvas, Qgis.GeometryType.Polygon)
-        self.previewRubber.setStrokeColor(QColor(225, 82, 30, 230))
-        self.previewRubber.setFillColor(QColor(255, 151, 54, 60))
-        self.previewRubber.setWidth(2)
+        # Fill only: no outline, so many neighbouring polygons stay light to
+        # draw and the map under them stays readable.
+        self.previewRubber.setStrokeColor(QColor(0, 0, 0, 0))
+        self.previewRubber.setFillColor(QColor(255, 151, 54, 80))
+        self.previewRubber.setWidth(0)
 
         # Where the chosen local DEM file holds values: thin line, light hatch.
         self.localDemRubber = QgsRubberBand(
@@ -867,9 +911,13 @@ class LandscapeExplorerDialog(QDialog):
         # The developer's name, as in Forestry Operations Lite (not translated).
         self.pluginCreditLabel = QLabel("Developed by Avid Tree Work", panel)
         self.pluginCreditLabel.setStyleSheet("color: #888; font-size: 8pt;")
+        # Bottom left, away from the right panel's buttons; indented like the
+        # contents of the boxes above.
         self.pluginCreditLabel.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
+        indent = self.style().pixelMetric(QStyle.PixelMetric.PM_LayoutLeftMargin)
+        self.pluginCreditLabel.setContentsMargins(indent, 0, 0, 0)
         layout.addWidget(self.pluginCreditLabel)
         layout.addStretch(0)
         return panel
@@ -1703,42 +1751,41 @@ class LandscapeExplorerDialog(QDialog):
         finest = math.sqrt(LARGE_EXPORT_PIXELS / square_inches)
         return max(LIMIT_DPI_STEP, int(finest // LIMIT_DPI_STEP) * LIMIT_DPI_STEP)
 
-    def _checked_export_dpi(self, combo, title, size_text, allow_as_is):
+    def _checked_export_dpi(self, combo, title, size_text, very_large=False):
         """The resolution to export at, or None to stop.
 
-        Above LARGE_EXPORT_PIXELS the user chooses: as it is (unless over
-        the plugin's own limit, allow_as_is False), the processing limit
-        (which then becomes the setting), or cancel.
+        Above LARGE_EXPORT_PIXELS the user chooses: as it is, the processing
+        limit (which then becomes the setting), or cancel. ``very_large``
+        (one image over about 2 GB) makes the notice stronger; the choice
+        stays with the user, since what a PC can do differs.
         """
 
         dpi = combo.dpi()
         width_mm, height_mm = self._paper_size_mm()
         width_px = int(round(width_mm / 25.4 * dpi))
         height_px = int(round(height_mm / 25.4 * dpi))
-        if allow_as_is and width_px * height_px <= LARGE_EXPORT_PIXELS:
+        if not very_large and width_px * height_px <= LARGE_EXPORT_PIXELS:
             return dpi
         limit = self._processing_limit_dpi()
         box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Warning)
+        box.setIcon(QMessageBox.Icon.Critical if very_large else QMessageBox.Icon.Warning)
         box.setWindowTitle(title)
         box.setText(size_text.format(self._paper_name(), dpi, width_px, height_px))
-        box.setInformativeText(
-            tr(
-                "This takes a long time and a lot of memory, so the plugin "
-                "sets a guideline processing limit."
-                if allow_as_is
-                else "This takes a long time and a lot of memory, so the plugin "
-                "limits one image to about 2 GB.",
-                "時間とメモリを多く使うためプラグインで処理上限の目安を設けています。"
-                if allow_as_is
-                else "時間とメモリを多く使うためプラグインで1枚の画像を約2 GBまでに制限しています。",
-            )
+        guideline = tr(
+            "This takes a long time and a lot of memory, so the plugin "
+            "sets a guideline processing limit.",
+            "時間とメモリを多く使うためプラグインで処理上限の目安を設けています。",
         )
-        as_is = None
-        if allow_as_is:
-            as_is = box.addButton(
-                tr("Export as it is", "このまま書き出す"), QMessageBox.ButtonRole.AcceptRole
-            )
+        if very_large:
+            guideline = tr(
+                "One image goes over about 2 GB; a PC without enough memory "
+                "may fail to export it.",
+                "1枚の画像が約2 GBを超えます。メモリが足りないPCでは書き出せないことがあります。",
+            ) + "\n" + guideline
+        box.setInformativeText(guideline)
+        as_is = box.addButton(
+            tr("Export as it is", "このまま書き出す"), QMessageBox.ButtonRole.AcceptRole
+        )
         use_limit = box.addButton(
             tr(
                 "Export at the processing limit ({} dpi)",
@@ -1751,7 +1798,7 @@ class LandscapeExplorerDialog(QDialog):
         _keep_message_lines(box)
         box.exec()
         clicked = box.clickedButton()
-        if as_is is not None and clicked is as_is:
+        if clicked is as_is:
             return dpi
         if clicked is use_limit:
             combo.setDpi(limit)
@@ -1788,7 +1835,6 @@ class LandscapeExplorerDialog(QDialog):
                 "{} at {} dpi makes images of {:,} × {:,} pixels.",
                 "{}・{} dpiでは画像部分が{:,} × {:,}画素になります。",
             ),
-            allow_as_is=True,
         )
         if dpi is None:
             self._show_status(cancelled)
@@ -2102,9 +2148,8 @@ class LandscapeExplorerDialog(QDialog):
                 "{} at {} dpi makes an image of {:,} × {:,} pixels.",
                 "{}・{} dpiでは{:,} × {:,}画素の画像になります。",
             ),
-            # The plugin's own limit for one image (4 bytes a pixel); not a
-            # limit of Qt or QGIS.
-            allow_as_is=pixels * 4 < MAX_IMAGE_BYTES,
+            # One image over about 2 GB (4 bytes a pixel): a stronger notice.
+            very_large=pixels * 4 >= VERY_LARGE_IMAGE_BYTES,
         )
         if dpi is None:
             self._show_status(cancelled)
@@ -2430,6 +2475,15 @@ class LandscapeExplorerDialog(QDialog):
         self.polygonAreaRadio = QRadioButton(
             tr("Polygon layer", "ポリゴンレイヤー"), area_mode_row
         )
+        self.polygonAreaRadio.setToolTip(
+            tr(
+                "Analyses the polygons. The preview is the sheet of the exports; "
+                "the lines cutting it into four show the balance of the polygons "
+                "on the sheet.",
+                "ポリゴンの範囲を解析します。プレビューがそのまま書き出しの紙になります。"
+                "4分割の線は、紙の中でのポリゴンの釣り合いを見るための目安です。",
+            )
+        )
         self.mapExtentAreaRadio = QRadioButton(
             tr("Use preview map extent", "画面の範囲を使用"), area_mode_row
         )
@@ -2460,6 +2514,14 @@ class LandscapeExplorerDialog(QDialog):
             tr("Use selected polygon features only", "選択したポリゴン地物のみを使用")
         )
         self.selectedOnlyCheck.setChecked(True)
+        self.selectedOnlyCheck.setToolTip(
+            tr(
+                "On: the selected polygons. Off: the polygons in the preview, "
+                "cut to the preview (the selection is cleared).",
+                "オン：選択したポリゴン。オフ：プレビューに入っているポリゴンを、"
+                "プレビューの範囲で切り取って使います（選択は解除します）。",
+            )
+        )
         form.addRow("", self.selectedOnlyCheck)
         return box
 
@@ -2901,9 +2963,9 @@ class LandscapeExplorerDialog(QDialog):
         box.setWindowTitle("Avid Maps Extra")
         box.setText(tr(
             "Avid Maps Extra is a field map app (PWA) that opens the GeoPDFs made "
-            "here.\nIt is made by the author of this plugin (Avid Tree Work).",
+            "here.\nIt is made by the author of this plugin (Hideharu Masai).",
             "Avid Maps Extra は、ここで作った GeoPDF を現場で開ける地図アプリ（PWA）です。\n"
-            "このプラグインの作者（Avid Tree Work）が作っています。",
+            "このプラグインの作者（Hideharu Masai）が作っています。",
         ))
         box.setInformativeText(tr(
             "The overview page is in English; the app itself is in Japanese.\n"
@@ -3264,9 +3326,7 @@ class LandscapeExplorerDialog(QDialog):
             self.previewFrame.setAnalysisGuideVisible(False)
             self.previewRubber.reset(Qgis.GeometryType.Polygon)
         else:
-            self.previewFrame.setAnalysisGuideVisible(
-                self.mapExtentAreaRadio.isChecked()
-            )
+            self._update_analysis_guide()
             self._update_preview_selection_controls()
         # Export stays visible as the goal of the workflow, but it is only
         # usable while an analysis is being managed.
@@ -3845,15 +3905,27 @@ class LandscapeExplorerDialog(QDialog):
         self._update_preview_selection_controls()
         self._update_preview_layers()
 
+    def _update_analysis_guide(self):
+        """The preview guide before an analysis (the preview is the paper).
+
+        Map-extent area: the central 3/5 frame; polygon area: lines cutting
+        the sheet into four. None while an analysis is being managed.
+        """
+
+        kind = (
+            PreviewAnalysisGuide.FRAME
+            if self.mapExtentAreaRadio.isChecked()
+            else PreviewAnalysisGuide.QUARTERS
+        )
+        self.previewFrame.setAnalysisGuideVisible(not self._in_management(), kind)
+
     def _area_mode_changed(self, *args):
         del args
         use_polygon = self.polygonAreaRadio.isChecked()
         self.aoiLayerCombo.setEnabled(use_polygon)
         self.selectedOnlyCheck.setEnabled(use_polygon)
         self._update_watershed_option()
-        self.previewFrame.setAnalysisGuideVisible(
-            not use_polygon and not self._in_management()
-        )
+        self._update_analysis_guide()
         if not use_polygon and self.previewCanvas.mapTool() is self.previewSelectTool:
             self._activate_map_navigation()
         self._update_preview_selection_controls()
@@ -3945,11 +4017,6 @@ class LandscapeExplorerDialog(QDialog):
             self._update_preview_selection_controls()
             return
 
-        if self.selectedOnlyCheck.isChecked():
-            features = layer.getSelectedFeatures()
-        else:
-            features = layer.getFeatures()
-
         destination_crs = self.previewCanvas.mapSettings().destinationCrs()
         transform = None
         if (
@@ -3961,6 +4028,26 @@ class LandscapeExplorerDialog(QDialog):
                 layer.crs(), destination_crs, QgsProject.instance().transformContext()
             )
 
+        request = QgsFeatureRequest()
+        request.setNoAttributes()
+        if self.selectedOnlyCheck.isChecked():
+            features = layer.getSelectedFeatures(request)
+        else:
+            # All features are used: outline only those in view (the outline
+            # is for the preview), so a large layer does not stall QGIS.
+            view = self.previewCanvas.extent()
+            if transform is not None:
+                try:
+                    view = transform.transformBoundingBox(
+                        view, Qgis.TransformDirection.Reverse
+                    )
+                except QgsCsException:
+                    view = None
+            if view is not None and not view.isEmpty():
+                request.setFilterRect(view)
+            features = layer.getFeatures(request)
+
+        geometries = []
         for feature in features:
             geometry = feature.geometry()
             if geometry is None or geometry.isEmpty():
@@ -3971,9 +4058,36 @@ class LandscapeExplorerDialog(QDialog):
                     geometry.transform(transform)
                 except QgsCsException:
                     continue
-            self.previewRubber.addGeometry(geometry, None)
+            geometries.append(geometry)
+        # One update of the outline, not one per feature: added one by one,
+        # the time grew with the square of the count (a 146,920 polygon
+        # forest plan stalled QGIS); set at once, all of them took about
+        # 1.3 s to read and place (Linux).
+        if geometries:
+            self.previewRubber.setToGeometry(QgsGeometry.collectGeometry(geometries), None)
         self.previewCanvas.refresh()
         self._update_preview_selection_controls()
+
+    def _selected_only_toggled(self, checked):
+        """Selected features only on/off. Turned off, the selection is cleared
+        (it is the project layer's selection), as all features are used."""
+
+        if not checked:
+            layer = self.aoiLayerCombo.currentLayer()
+            if layer is not None and layer.selectedFeatureCount() > 0:
+                layer.removeSelection()
+        self._refresh_preview_polygon()
+
+    def _queue_outline_for_view(self, *args):
+        """The preview moved: outline the features now in view (all-features mode)."""
+
+        del args
+        if (
+            self.polygonAreaRadio.isChecked()
+            and not self.selectedOnlyCheck.isChecked()
+            and not self._in_management()
+        ):
+            self._outlineTimer.start()
 
     def _dem_source_changed(self, *args):
         del args
@@ -4322,7 +4436,7 @@ class LandscapeExplorerDialog(QDialog):
             # next run gets its own name instead of overwriting this one.
             analysis_name = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        geometry, crs, area_mode = self._analysis_area()
+        area_wkt, area_parts, area_box, crs, area_mode, area_clip = self._analysis_area()
         outputs = []
         if self.hillshadeCheck.isChecked():
             outputs.append("hillshade")
@@ -4377,7 +4491,17 @@ class LandscapeExplorerDialog(QDialog):
             # The view the user saw when running, including the surroundings.
             # Analysis management shows exactly this view again.
             "preview_view": self._current_preview_view(),
-            "aoi_wkt": geometry.asWkt(12),
+            # Polygons: no WKT yet; the job combines the parts first.
+            "aoi_wkt": area_wkt,
+            "aoi_parts_wkb": area_parts,
+            "aoi_clip": [
+                area_clip.xMinimum(), area_clip.yMinimum(),
+                area_clip.xMaximum(), area_clip.yMaximum(),
+            ] if area_clip is not None else None,
+            "aoi_bbox": [
+                area_box.xMinimum(), area_box.yMinimum(),
+                area_box.xMaximum(), area_box.yMaximum(),
+            ],
             "aoi_crs_wkt": crs.toWkt(),
         }
 
@@ -4398,6 +4522,15 @@ class LandscapeExplorerDialog(QDialog):
         }
 
     def _analysis_area(self):
+        """(area WKT, polygon parts, bounding box, CRS, mode, clip) of the analysis.
+
+        Map-extent area: the WKT of the view; no parts. Polygon area: no WKT
+        but the polygons as WKB, combined in the analysis job (worker thread):
+        combining many polygons (a forest plan of 146,920) took long in the
+        UI thread and could fail on a broken polygon. The bounding box serves
+        the DEM size notice before that. Clip: with "selected only" off, the
+        preview rectangle the combined polygons are cut to (else None).
+        """
         if self.mapExtentAreaRadio.isChecked():
             # Analyse exactly what the preview shows. The stored stable extent
             # is only the rectangle kept across resizes; after a portrait /
@@ -4414,7 +4547,10 @@ class LandscapeExplorerDialog(QDialog):
             crs = self.previewCanvas.mapSettings().destinationCrs()
             if extent.isEmpty() or not crs.isValid():
                 raise ValueError(tr("The preview extent is not ready.", "プレビュー範囲を取得できません。"))
-            return QgsGeometry.fromRect(extent), crs, "map_extent"
+            return (
+                QgsGeometry.fromRect(extent).asWkt(12), None, QgsRectangle(extent), crs,
+                "map_extent", None,
+            )
 
         layer = self.aoiLayerCombo.currentLayer()
         if layer is None:
@@ -4427,20 +4563,52 @@ class LandscapeExplorerDialog(QDialog):
                         "1つ以上のポリゴンを選択するか、「選択地物のみ」を解除してください。",
                     )
                 )
-            features = layer.getSelectedFeatures()
+            features = layer.getSelectedFeatures(QgsFeatureRequest().setNoAttributes())
+            clip = None
         else:
-            features = layer.getFeatures()
-        geometries = [
-            QgsGeometry(feature.geometry())
-            for feature in features
-            if feature.geometry() is not None and not feature.geometry().isEmpty()
-        ]
-        if not geometries:
+            # Not the whole layer: the polygons in the preview (the paper),
+            # cut to it, as outlined there. A layer can cover a region far
+            # wider than the paper (a forest plan of a whole district).
+            clip = self._preview_rect_in(layer.crs())
+            if clip is None:
+                raise ValueError(tr("The preview extent is not ready.", "プレビュー範囲を取得できません。"))
+            features = layer.getFeatures(
+                QgsFeatureRequest().setNoAttributes().setFilterRect(clip)
+            )
+        parts = []
+        box = None
+        for feature in features:
+            geometry = feature.geometry()
+            if geometry is None or geometry.isEmpty():
+                continue
+            parts.append(bytes(geometry.asWkb()))
+            if box is None:
+                box = QgsRectangle(geometry.boundingBox())
+            else:
+                box.combineExtentWith(geometry.boundingBox())
+        if not parts or box is None:
             raise ValueError(tr("The area has no usable geometry.", "範囲に使用可能な形状がありません。"))
-        geometry = QgsGeometry.unaryUnion(geometries)
-        if geometry.isNull() or geometry.isEmpty():
-            raise ValueError(tr("The area could not be combined.", "範囲を結合できませんでした。"))
-        return geometry, layer.crs(), "polygon"
+        if clip is not None:
+            box = box.intersect(clip)
+            if box.isEmpty():
+                raise ValueError(tr("The area has no usable geometry.", "範囲に使用可能な形状がありません。"))
+        return None, parts, box, layer.crs(), "polygon", clip
+
+    def _preview_rect_in(self, crs):
+        """The preview extent as a rectangle in crs, or None."""
+
+        extent = self.previewCanvas.extent()
+        preview_crs = self.previewCanvas.mapSettings().destinationCrs()
+        if extent.isEmpty():
+            return None
+        if crs.isValid() and preview_crs.isValid() and crs != preview_crs:
+            try:
+                extent = QgsCoordinateTransform(
+                    preview_crs, crs, QgsProject.instance().transformContext()
+                ).transformBoundingBox(extent)
+            except QgsCsException:
+                return None
+        return None if extent.isEmpty() else QgsRectangle(extent)
 
     def _show_terrain_message(self, message):
         if is_japanese():
@@ -5183,10 +5351,10 @@ def _stored_image_format():
     return name if name in _IMAGE_EXTENSIONS else "PNG"
 
 
-# The plugin's own limit for one exported image (4 bytes per pixel), about
-# 2 GB. Qt itself (5.15 / 6.8) does not limit an image's total size; this
-# keeps the memory one export takes within bounds.
-MAX_IMAGE_BYTES = 2 ** 31 - 1
+# One exported image (4 bytes per pixel) over about 2 GB gets a stronger
+# notice; it can still be exported as it is. Not a limit of Qt: a 2.3 GB
+# QImage was made under Qt 5.15 (QGIS 3.44), 2026-11-13.
+VERY_LARGE_IMAGE_BYTES = 2 ** 31 - 1
 
 
 def _write_image_crs(path, crs_wkt):
@@ -5825,6 +5993,15 @@ def _build_print_layout(name, landscape, layers, legend_layers, extent, crs,
             box_y, box_w = legend_top, page_w - margin - box_x
             box_bottom = legend_bottom
         placed_locator = False
+        _layout_log(
+            "Area summary: {} page, box x {:.1f} y {:.1f} mm, width {:.1f} mm "
+            "(legend {:.1f} mm), bottom {:.1f} mm".format(
+                "landscape" if landscape else "portrait",
+                box_x, box_y, box_w, legend_w, box_bottom,
+            )
+        )
+        if box_w < 55.0:
+            _layout_log("Area summary: not placed, the box is under 55 mm wide")
         if box_w >= 55.0:
             placed_locator = _add_area_summary(
                 layout, summary, box_x, box_y, box_w, box_bottom, text_label,
@@ -5846,16 +6023,7 @@ def _add_area_summary(layout, summary, x, y, width, bottom, text_label,
     locator map (``locator`` = PNG in base64), or the elevation band table
     when there is no locator.
     """
-    from qgis.core import (
-        QgsLayoutFrame,
-        QgsLayoutItemManualTable,
-        QgsLayoutPoint,
-        QgsLayoutSize,
-        QgsLayoutTableColumn,
-        QgsLayoutUtils,
-        QgsTableCell,
-        QgsTextFormat,
-    )
+    from qgis.core import QgsLayoutUtils, QgsTableCell, QgsTextFormat
 
     def text_format(size, bold=False):
         font = QFont()
@@ -5885,14 +6053,19 @@ def _add_area_summary(layout, summary, x, y, width, bottom, text_label,
                 QgsTableCell("{:,.2f}".format(item["area_ha"])),
                 QgsTableCell("{:.1f}".format(item["percent"])),
             ])
+
     # QGIS gives a table no height before a frame holds it; work it out from
     # the rows (header + classes) and the font.
-    font = QFont()
-    font.setPointSizeF(7.5)
-    # Measured: a row is the font height plus the two cell margins.
-    row_h = QgsLayoutUtils.fontHeightMM(font) + 2 * 0.8 + 0.1
+    def table_height(size):
+        font = QFont()
+        font.setPointSizeF(size)
+        # Measured: a row is the font height plus the two cell margins.
+        row = QgsLayoutUtils.fontHeightMM(font) + 2 * 0.8 + 0.1
+        return row, row * (len(rows) + 1) + 1.0
+
+    table_size = 7.5
+    row_h, table_h = table_height(table_size)
     table_w = min(width, 80.0)
-    table_h = row_h * (len(rows) + 1) + 1.0
 
     heading = tr("Summary of the area", "範囲の要約")
     numbers = _summary_text(summary, show_slope, location)
@@ -5908,10 +6081,28 @@ def _add_area_summary(layout, summary, x, y, width, bottom, text_label,
         locator_w = locator_h * LOCATOR_SIZE_MM[0] / LOCATOR_SIZE_MM[1]
     if locator is not None and locator_h < 30.0:
         locator = None
+    # Fonts measure a little larger on some systems (Windows, QGIS 4: a
+    # table 0.3 mm too high was left out). Smaller type before leaving the
+    # table out, down to 6 pt.
+    if locator is None and rows and room < table_h:
+        for smaller in (7.0, 6.5, 6.0):
+            smaller_row, smaller_h = table_height(smaller)
+            if smaller_h <= room:
+                table_size, row_h, table_h = smaller, smaller_row, smaller_h
+                break
     block_h = locator_h if locator is not None else (table_h if rows else 0.0)
+    _layout_log(
+        "Area summary: {}, {} rows, heading {:.1f} mm, numbers {:.1f} mm, "
+        "row {:.2f} mm, table {:.1f} mm ({:g} pt), block {:.1f} mm, room {:.1f} mm".format(
+            "locator map" if locator is not None
+            else ("slope table" if show_slope else "elevation table"),
+            len(rows), heading_h, numbers_h, row_h, table_h, table_size, block_h, room,
+        )
+    )
     # Nothing is created unless it all fits: a table made for the layout but
     # never added to it crashes QGIS when the layout is deleted.
     if room < block_h:
+        _layout_log("Area summary: not placed, the block does not fit the room")
         return False
     text_label(heading, 9, x, y, width, bold=True)
     y += heading_h
@@ -5923,6 +6114,26 @@ def _add_area_summary(layout, summary, x, y, width, bottom, text_label,
     if not rows:
         return False
 
+    try:
+        _add_summary_table(
+            layout, rows, first_header, x, y, table_w, table_h, text_format, table_size
+        )
+    except Exception as error:  # noqa: BLE001 - log, the rest of the layout stays
+        _layout_log("Area summary: the table could not be made: {}".format(error))
+    return False
+
+
+def _add_summary_table(layout, rows, first_header, x, y, table_w, table_h, text_format,
+                       size=7.5):
+    """The summary table in a frame at (x, y)."""
+    from qgis.core import (
+        QgsLayoutFrame,
+        QgsLayoutItemManualTable,
+        QgsLayoutPoint,
+        QgsLayoutSize,
+        QgsLayoutTableColumn,
+    )
+
     table = QgsLayoutItemManualTable.create(layout)
     layout.addMultiFrame(table)
     table.setTableContents(rows)
@@ -5932,15 +6143,28 @@ def _add_area_summary(layout, summary, x, y, width, bottom, text_label,
         QgsLayoutTableColumn(tr("Area (ha)", "面積（ha）")),
         QgsLayoutTableColumn(tr("Share (%)", "割合（%）")),
     ])
-    table.setHeaderTextFormat(text_format(7.5, bold=True))
-    table.setContentTextFormat(text_format(7.5))
+    table.setHeaderTextFormat(text_format(size, bold=True))
+    table.setContentTextFormat(text_format(size))
     table.setCellMargin(0.8)
     table.setColumnWidths([table_w * 0.36, table_w * 0.32, table_w * 0.32])
     frame = QgsLayoutFrame(layout, table)
     frame.attemptMove(QgsLayoutPoint(x, y))
     frame.attemptResize(QgsLayoutSize(table_w + 2.0, table_h))
     table.addFrame(frame)
-    return False
+    size = frame.sizeWithUnits()
+    _layout_log(
+        "Area summary: table placed, frame {:.1f} x {:.1f} mm, {} frame(s), "
+        "table height {:.1f} mm".format(
+            size.width(), size.height(), len(table.frames()), table.totalSize().height()
+        )
+    )
+
+
+def _layout_log(message):
+    """A line in the plugin's log tab about the print layout (to see on any PC
+    why a part of it is or is not placed)."""
+
+    QgsMessageLog.logMessage(message, PLUGIN_NAME, Qgis.MessageLevel.Info)
 
 
 def _set_north_arrow_picture(item):
@@ -6133,6 +6357,9 @@ _TERRAIN_MESSAGES_JA = {
         "ラインラント＝プファルツ州のタイルの一覧を確認しています…",
 }
 _TERRAIN_PATTERNS_JA = (
+    (r"Combining the area… (\d+)%", r"範囲をまとめています… \1%"),
+    (r"Combining the area \(repaired polygons\)… (\d+)%",
+     r"範囲をまとめています（ポリゴンの形を直して）… \1%"),
     (r"Catchments: preparing the (\S+) m grid\.\.\.",
      r"流域範囲：\1 mのグリッドを準備しています…"),
     (r"Catchments: routing the flow… (\d+)%", r"流域範囲：流れの道筋を決めています… \1%"),
@@ -6221,6 +6448,10 @@ _TERRAIN_ERRORS_JA = {
 }
 _TERRAIN_ERROR_PATTERNS_JA = (
     (r"All tile downloads failed\.\n(.*)", r"タイルのダウンロードがすべて失敗しました。\n\1"),
+    (r"VIRTUAL SHIZUOKA could not be reached \(no answer from the server\)\. "
+     r"Check the network and run again\.\n(.*)",
+     r"VIRTUAL SHIZUOKAにつながりませんでした（サーバーから応答がありません）。"
+     r"通信の状態を確かめて、もう一度実行してください。\n\1"),
     (r"GSI DEM tiles are unavailable for this area\.", r"この範囲の国土地理院DEMを取得できません。"),
     (r"Terrarium DEM tiles are unavailable for this area\.", r"この範囲のTerrarium DEMを取得できません。"),
     (r"The service returned an error instead of elevation data: (.*)",
@@ -6314,10 +6545,14 @@ def _dem_size_estimate(specification):
     """
 
     crs = QgsCoordinateReferenceSystem.fromWkt(specification.get("aoi_crs_wkt") or "")
-    geometry = QgsGeometry.fromWkt(specification.get("aoi_wkt") or "")
-    if not crs.isValid() or geometry.isNull() or geometry.isEmpty():
+    values = specification.get("aoi_bbox")
+    if values and len(values) == 4:
+        box = QgsRectangle(*values)
+    else:
+        geometry = QgsGeometry.fromWkt(specification.get("aoi_wkt") or "")
+        box = None if geometry.isNull() or geometry.isEmpty() else geometry.boundingBox()
+    if not crs.isValid() or box is None or box.isEmpty():
         return None
-    box = geometry.boundingBox()
     try:
         xmin, xmax, ymin, ymax = _a_series_envelope(
             (box.xMinimum(), box.xMaximum(), box.yMinimum(), box.yMaximum()),
@@ -6655,11 +6890,8 @@ def _style_hillshade(layer):
     renderer = QgsSingleBandGrayRenderer(layer.dataProvider(), 1)
     layer.setRenderer(renderer)
     layer.setOpacity(0.60)
-    composition = getattr(QPainter, "CompositionMode", None)
-    if composition is not None:
-        layer.setBlendMode(composition.CompositionMode_Multiply)
-    else:
-        layer.setBlendMode(QPainter.CompositionMode_Multiply)
+    # Scoped enum: works in PyQt5 (QGIS 3) and is required by PyQt6 (QGIS 4).
+    layer.setBlendMode(QPainter.CompositionMode.CompositionMode_Multiply)
     layer.triggerRepaint()
 
 

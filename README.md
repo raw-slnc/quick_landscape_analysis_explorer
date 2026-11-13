@@ -12,6 +12,11 @@ QLAE is for terrain reconnaissance: reading the landform of an
 area quickly from a DEM, and taking the result out in the form each task
 needs.
 
+The settings are fixed on purpose: slope classes, catchment size and contour
+intervals are chosen for reading forest terrain before going to the site, so
+that maps of different areas can be compared and checked in the field on the
+same terms.
+
 - GeoPDF: a GeoPDF for field surveys, to be opened in a field map app that
   reads GeoPDF.
 - Image: images for documents outside QGIS.
@@ -35,8 +40,10 @@ right of the window opens its overview page.
 
 ## Analysis
 
-- Area: a polygon layer (optionally only the selected features), or the
-  preview map extent.
+- Area: a polygon layer, or the preview map extent. With a polygon layer,
+  either the selected polygons, or (with "selected features only" off) the
+  polygons in the preview, cut to the preview. Many polygons are combined in
+  the analysis job, with progress; broken polygons are repaired first.
 - DEM source: one list, grouped by region. A source stays listed but cannot
   be chosen while the preview is outside its region, or when this QGIS cannot
   read its data; its tooltip says why.
@@ -143,8 +150,9 @@ one may slow down earlier.
   the guideline processing limit, marked "*" in the resolution lists. Above
   it, GeoPDF and image exports ask whether to export as they are or at the
   processing limit.
-- Image size: one exported image is limited to about 2 GB (4 bytes per pixel).
-  Larger images can only be exported at the processing limit.
+- Image size: when one exported image goes over about 2 GB (4 bytes per
+  pixel), the notice is stronger, as a PC without enough memory may fail to
+  export it; it can still be exported as it is.
 
 ## Code layout
 

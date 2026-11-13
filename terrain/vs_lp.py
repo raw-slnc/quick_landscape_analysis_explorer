@@ -39,6 +39,15 @@ if _vendor not in sys.path:
 from defusedxml.ElementTree import fromstring as _defused_fromstring  # noqa: E402
 
 BUCKET_URL = "https://virtual-shizuoka.s3.ap-northeast-1.amazonaws.com"
+# Seconds without an answer before the S3 listing / existence check gives up
+# (was 10; slow or busy lines then read as "no tiles").
+S3_TIMEOUT = 60
+
+
+class VsConnectionError(Exception):
+    """The S3 bucket could not be reached (no answer, or the line failed)."""
+
+
 TILE_W = 400   # タイル幅 X(northing) [m]
 TILE_H = 300   # タイル高 Y(easting) [m]
 
@@ -146,7 +155,7 @@ def _s3_list_xx(year: int, folder: str, xx: str, lp_type: str = "Grid") -> set:
     prefix = f"{year}/LP/{lp_type}/08/{folder}/{xx}/"
     url = f"{BUCKET_URL}/?list-type=2&prefix={prefix}&delimiter=/"
     try:
-        with urllib.request.urlopen(url, timeout=10) as r:  # nosec B310
+        with urllib.request.urlopen(url, timeout=S3_TIMEOUT) as r:  # nosec B310
             root = _defused_fromstring(r.read())
         ns = {"s": "http://s3.amazonaws.com/doc/2006-03-01/"}
         codes = set()
@@ -156,6 +165,10 @@ def _s3_list_xx(year: int, folder: str, xx: str, lp_type: str = "Grid") -> set:
             if fname.endswith(".zip"):
                 codes.add(fname[:-4])
         return codes
+    except urllib.error.HTTPError:
+        return set()  # the server answered: nothing listed (or listing refused)
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+        raise VsConnectionError(str(error)) from error
     except Exception:
         return set()
 
@@ -168,8 +181,12 @@ def _s3_head_check(year: int, code: str, lp_type: str = "Grid") -> bool:
     url = f"{BUCKET_URL}/{year}/LP/{lp_type}/08/{folder}/{xx}/{code}.zip"
     req = urllib.request.Request(url, method="HEAD")
     try:
-        with urllib.request.urlopen(req, timeout=10):  # nosec B310
+        with urllib.request.urlopen(req, timeout=S3_TIMEOUT):  # nosec B310
             return True
+    except urllib.error.HTTPError:
+        return False  # the server answered: no such tile
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+        raise VsConnectionError(str(error)) from error
     except Exception:
         return False
 

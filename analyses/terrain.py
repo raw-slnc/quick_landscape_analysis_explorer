@@ -85,6 +85,12 @@ def create_terrain_package(specification, context):
     package_path = specification["package_path"]
     if os.path.exists(package_path) and not specification.get("overwrite"):
         raise TerrainJobError("package_exists")
+    if not specification.get("aoi_wkt"):
+        # Polygon area: the polygons are combined here, not in the UI thread.
+        parts = specification.pop("aoi_parts_wkb", None) or []
+        specification["aoi_wkt"] = _combine_area(
+            parts, context, specification.get("aoi_clip")
+        )
 
     # The DEMs opened below are closed (ExitStack) before the temporary folder
     # is removed: Windows cannot delete a file GDAL still holds open.
@@ -356,6 +362,70 @@ def create_terrain_package(specification, context):
     return {"package_path": package_path, "manifest": manifest}
 
 
+# Polygons combined per batch, then the batches together (progress, and a
+# smaller union each time).
+_COMBINE_BATCH = 1000
+
+
+def _combine_area(parts_wkb, context, clip=None):
+    """WKT of the polygon area: the polygons combined into one.
+
+    clip: (xmin, ymin, xmax, ymax) the area is cut to (the preview, when
+    all polygons in view are used), or None.
+
+    A forest plan of 146,920 polygons could not be combined at once in the
+    UI thread (one broken polygon makes the whole union fail). Here: in
+    batches with progress; if the union fails, again with the polygons
+    repaired (makeValid); if that fails too, the polygons are kept as one
+    collection without combining (the frame and the area mask come out the
+    same).
+    """
+    from qgis.core import QgsGeometry
+
+    geometries = []
+    for wkb in parts_wkb:
+        geometry = QgsGeometry()
+        geometry.fromWkb(wkb)
+        if not geometry.isNull() and not geometry.isEmpty():
+            geometries.append(geometry)
+    if not geometries:
+        raise TerrainJobError("The analysis area has no usable geometry.")
+
+    def union(items, label):
+        batches = [items[i:i + _COMBINE_BATCH] for i in range(0, len(items), _COMBINE_BATCH)]
+        merged = []
+        for done, batch in enumerate(batches, start=1):
+            context.check()
+            context.report("{}… {}%".format(label, 100 * done // (len(batches) + 1)))
+            part = QgsGeometry.unaryUnion(batch)
+            if part.isNull() or part.isEmpty():
+                return None
+            merged.append(part)
+        context.check()
+        whole = merged[0] if len(merged) == 1 else QgsGeometry.unaryUnion(merged)
+        return None if whole.isNull() or whole.isEmpty() else whole
+
+    whole = union(geometries, "Combining the area")
+    if whole is None:
+        repaired = []
+        for geometry in geometries:
+            context.check()
+            fixed = geometry.makeValid()
+            if not fixed.isNull() and not fixed.isEmpty():
+                repaired.append(fixed)
+        whole = union(repaired, "Combining the area (repaired polygons)") if repaired else None
+        if whole is None:
+            whole = QgsGeometry.collectGeometry(repaired or geometries)
+    if clip:
+        from qgis.core import QgsRectangle
+
+        cut = whole.intersection(QgsGeometry.fromRect(QgsRectangle(*clip)))
+        if cut.isNull() or cut.isEmpty():
+            raise TerrainJobError("The analysis area has no usable geometry.")
+        whole = cut
+    return whole.asWkt(12)
+
+
 def _geometry_from_specification(specification):
     geometry = ogr.CreateGeometryFromWkt(specification["aoi_wkt"])
     if geometry is None or geometry.IsEmpty():
@@ -438,7 +508,14 @@ def _fetch_vs_loader(specification, acquisition_frame, work_dir, context):
         context.check()
         context.report("Checking VIRTUAL SHIZUOKA tiles... {}/{}".format(done, total))
 
-    resolved = vs_lp.resolve_all_years(codes, progress_cb=checking)
+    try:
+        resolved = vs_lp.resolve_all_years(codes, progress_cb=checking)
+    except vs_lp.VsConnectionError as error:
+        # Not "no tiles": the bucket did not answer.
+        raise TerrainJobError(
+            "VIRTUAL SHIZUOKA could not be reached (no answer from the server). "
+            "Check the network and run again.\n" + str(error)
+        )
     if not resolved:
         raise TerrainJobError("No VIRTUAL SHIZUOKA tiles are available for the analysis area.")
     # The newest survey of a tile may cover only part of it (08OE8859: 2020
