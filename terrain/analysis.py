@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Terrain derivatives adapted from Forestry Operations Lite (GPL-3.0-or-later)."""
+"""Terrain derivatives adapted from Forestry Operations Lite (GPL-2.0-or-later)."""
 
 """
 地形解析アルゴリズム群

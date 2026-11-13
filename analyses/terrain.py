@@ -126,6 +126,11 @@ def create_terrain_package(specification, context):
             prepared, analysis_frame.GetEnvelope(), landscape
         )
         mask, final_gt = _area_mask(prepared, analysis_aoi, window)
+        if specification.get("area_mode") == "map_extent":
+            # The view is the area: the frame is the view aligned outward to
+            # whole cells (and to the A-series ratio, which can add a row or
+            # column wholly outside the view). Fill the whole frame.
+            mask[:] = True
         rows, cols = mask.shape
         final_dem = _extract_window(prepared.data, window, np.nan)
         final_dem[~mask] = np.nan
@@ -161,10 +166,12 @@ def create_terrain_package(specification, context):
             context.check()
 
         catchments = None
+        catchment_engine = None
+        catchment_details = None
         if "watershed" in requested:
             context.report("Creating catchments...")
             try:
-                catchments = watershed.compute_catchments(
+                catchments, catchment_engine, catchment_details = watershed.compute_catchments(
                     prepared.data,
                     prepared.gt,
                     prepared.crs_wkt,
@@ -295,7 +302,17 @@ def create_terrain_package(specification, context):
                 "lines": len(contour_lines),
             } if contour_lines is not None else None,
             "watershed": {
-                "method": watershed.METHOD_TEXT,
+                "method": watershed.method_text(catchment_engine),
+                # "grass" (r.watershed) or "numpy" (no GRASS); see watershed.py.
+                "engine": catchment_engine,
+                # Seconds (whole step / flow computation) and grid cells, to
+                # compare GRASS and numpy on one PC.
+                "timing": catchment_details["timing"],
+                # Why GRASS did not run when numpy took over (else None).
+                "grass_error": catchment_details["grass_error"],
+                "boundaries": watershed.ROUNDING_TEXT
+                if catchments and all(item.get("rounded") for item in catchments)
+                else "grid cell edges",
                 "cell_size_m": max(watershed.CELL_SIZE_M, float(prepared.cell_size)),
                 "min_area_ha": watershed.MIN_AREA_HA,
                 "acquisition": "A-series frame x{:g} (all analyses on the wider area, "
@@ -421,34 +438,49 @@ def _fetch_vs_loader(specification, acquisition_frame, work_dir, context):
         context.check()
         context.report("Checking VIRTUAL SHIZUOKA tiles... {}/{}".format(done, total))
 
-    resolved = vs_lp.resolve_years(codes, progress_cb=checking)
+    resolved = vs_lp.resolve_all_years(codes, progress_cb=checking)
     if not resolved:
         raise TerrainJobError("No VIRTUAL SHIZUOKA tiles are available for the analysis area.")
-    paths = []
+    # The newest survey of a tile may cover only part of it (08OE8859: 2020
+    # a corner, 2019 nearly all): fill what it leaves from older surveys.
+    fetched = []  # (year, path)
     errors = []
     total = len(resolved)
-    for index, (code, year) in enumerate(sorted(resolved.items()), start=1):
-        context.check()
-        context.report("Downloading VIRTUAL SHIZUOKA tiles... {}/{}".format(index, total))
-        try:
-            paths.append(vs_lp.download_grid_tif(
-                code, year, work_dir, cancel_cb=context.cancelled
-            ))
-        except remote_zip.Cancelled:
-            raise TerrainJobCancelled()
-        except Exception as error:  # one tile failing should not stop the rest
-            errors.append("{}: {}".format(code, error))
-    if not paths:
+    for index, (code, years) in enumerate(sorted(resolved.items()), start=1):
+        txmin, tymin, txmax, tymax = vs_lp.tile_bbox(code)
+        part = (max(txmin, bbox[0]), max(tymin, bbox[1]), min(txmax, bbox[2]), min(tymax, bbox[3]))
+        for year in years:
+            context.check()
+            context.report("Downloading VIRTUAL SHIZUOKA tiles... {}/{}".format(index, total))
+            # One folder a year: a tile's files are named by its code only.
+            year_dir = os.path.join(work_dir, "vs_{}".format(year))
+            os.makedirs(year_dir, exist_ok=True)
+            try:
+                path = vs_lp.download_grid_tif(
+                    code, year, year_dir, cancel_cb=context.cancelled
+                )
+            except remote_zip.Cancelled:
+                raise TerrainJobCancelled()
+            except Exception as error:  # one tile failing should not stop the rest
+                errors.append("{} ({}): {}".format(code, year, error))
+                continue
+            fetched.append((year, path))
+            if vs_lp.missing_share(path, *part) < 0.0005:
+                break
+    if not fetched:
         raise TerrainJobError("All tile downloads failed.\n" + "\n".join(errors[:3]))
     context.check()
-    path = _merge_or_single(paths, work_dir, "vs_grid")
-    years = sorted(set(resolved.values()))
+    # Older surveys first: the newer ones are laid over them.
+    fetched.sort(key=lambda item: item[0])
+    path = _merge_or_single([path for _year, path in fetched], work_dir, "vs_grid")
+    years = sorted({year for year, _path in fetched})
     return _clip_fetched(path, acquisition_frame, specification), {
         "kind": "vs_lp",
         "provider": "Shizuoka Prefecture (VIRTUAL SHIZUOKA)",
         "dataset": "VS LP/Grid 0.5m DTM",
         "survey_years": years,
-        "tiles": len(paths),
+        "tiles": len({code for code in resolved}),
+        "tile_files": len(fetched),
         "licence": "CC BY 4.0",
         "service": vs_lp.BUCKET_URL,
     }
@@ -506,20 +538,22 @@ def _fetch_nagano_loader(key, specification, acquisition_frame, work_dir, contex
 
 
 def _fetch_remote_loader(key, specification, acquisition_frame, work_dir, context):
-    """Overseas DEM (NL AHN4, FR IGN LiDAR HD, NZ LINZ) for the area."""
+    """Overseas DEM (NL AHN4, FR IGN LiDAR HD, NZ LINZ, German DGM1) for the area."""
 
     spec = remote_dem.REMOTE_SOURCES[key]
     bbox = _source_envelope(
         acquisition_frame, specification, _epsg_wkt(spec["epsg"]), spec["cell"]
     )
-    path = remote_dem.fetch_remote_dem(context, key, bbox, work_dir)
-    return _clip_fetched(path, acquisition_frame, specification), {
+    path, extra = remote_dem.fetch_remote_dem(context, key, bbox, work_dir)
+    source = {
         "kind": key,
         "provider": spec["provider"],
         "dataset": spec["label"],
         "licence": spec["licence"],
         "service": spec["service"],
     }
+    source.update(extra)  # credit line and survey years, where the source has them
+    return _clip_fetched(path, acquisition_frame, specification), source
 
 
 def _open_local_loader(specification, acquisition_frame):
@@ -732,8 +766,6 @@ def _a_series_pixel_window(loader, envelope, landscape):
         extra = required_height - height
         r0 -= extra // 2
         r1 += extra - extra // 2
-    if (r1 - r0) * (c1 - c0) > 100_000_000:
-        raise TerrainJobError("The A-series output grid exceeds 100 million cells.")
     return r0, r1, c0, c1
 
 
@@ -790,7 +822,10 @@ def _area_mask(loader, geometry, window):
     feature = ogr.Feature(layer.GetLayerDefn())
     feature.SetGeometry(geometry)
     layer.CreateFeature(feature)
-    gdal.RasterizeLayer(raster, [1], layer, burn_values=[1])
+    # Every cell the area touches. The window is aligned outward to whole
+    # cells, so the cells along its edges are only partly in the area; with
+    # cell centres only, those edge rows and columns came out empty.
+    gdal.RasterizeLayer(raster, [1], layer, burn_values=[1], options=["ALL_TOUCHED=TRUE"])
     mask = band.ReadAsArray().astype(bool)
     feature = None
     layer = None

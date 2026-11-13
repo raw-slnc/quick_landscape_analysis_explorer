@@ -61,47 +61,84 @@ def write_morizon_slope_qml(path):
 
 
 def write_catchment_qml(path):
-    """Catchment polygons: no fill, outline as Morizon Next's catchment results.
+    """Catchment polygons: no fill, a purple dashed boundary on a white halo.
 
-    Morizon Next (processes/raster_styler/aggregate.py) draws the catchment
-    aggregation polygons with a 0.08 mm dark navy outline.
+    Catchment boundaries run along ridges, so they are kept apart from water
+    (blue), the dark brown contours and the slope colours: purple, dashed
+    (3 mm dash, 1 mm gap), 0.3 mm wide, a little wider than the 100 m
+    contours. A faint white line underneath keeps them readable on dark
+    hillshade or CS-map areas. Sizes are in mm, so they follow the paper.
+
+    Each boundary line is drawn once, from the lines a catchment keeps in
+    "edges_wkt" (see terrain/watershed.py): drawing every polygon outline
+    would put two dashed lines, out of step, on each shared boundary. A
+    boundary next to a whole catchment belongs to it; catchments cut by the
+    edge of the fetched DEM (complete = 0) draw their own lines thinner and
+    fainter. The frame edge is not a catchment boundary and is not drawn.
     """
+    from qgis.core import (
+        QgsFillSymbol,
+        QgsGeometryGeneratorSymbolLayer,
+        QgsLineSymbol,
+        QgsRuleBasedRenderer,
+        QgsSimpleLineSymbolLayer,
+        QgsSymbol,
+        QgsVectorLayer,
+    )
+    from qgis.PyQt.QtXml import QDomDocument
 
-    qml = """<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
-<qgis version="3.34" styleCategories="Symbology">
-  <renderer-v2 type="singleSymbol" symbollevels="0" enableorderby="0" forceraster="0">
-    <symbols>
-      <symbol type="fill" name="0" alpha="1" clip_to_extent="1" force_rhr="0">
-        <layer class="SimpleFill" enabled="1" locked="0" pass="0">
-          <Option type="Map">
-            <Option type="QString" name="color" value="0,0,0,0"/>
-            <Option type="QString" name="style" value="no"/>
-            <Option type="QString" name="outline_color" value="31,78,156,255"/>
-            <Option type="QString" name="outline_style" value="solid"/>
-            <Option type="QString" name="outline_width" value="0.08"/>
-            <Option type="QString" name="outline_width_unit" value="MM"/>
-            <Option type="QString" name="joinstyle" value="round"/>
-          </Option>
-        </layer>
-      </symbol>
-    </symbols>
-  </renderer-v2>
-  <blendMode>0</blendMode>
-  <featureBlendMode>0</featureBlendMode>
-  <layerGeometryType>2</layerGeometryType>
-</qgis>
-"""
-    Path(path).write_text(qml, encoding="utf-8")
+    def symbol(width, alpha, halo_width):
+        halo = QgsSimpleLineSymbolLayer.create({
+            "line_color": "255,255,255,{}".format(alpha // 2),
+            "line_width": halo_width,
+            "line_width_unit": "MM",
+            "capstyle": "round",
+            "joinstyle": "round",
+        })
+        line = QgsSimpleLineSymbolLayer.create({
+            "line_color": "120,40,140,{}".format(alpha),
+            "line_width": width,
+            "line_width_unit": "MM",
+            "use_custom_dash": "1",
+            "customdash": "3;1",
+            "customdash_unit": "MM",
+            "capstyle": "flat",
+            "joinstyle": "round",
+        })
+        generator = QgsGeometryGeneratorSymbolLayer.create({
+            "geometryModifier": 'geom_from_wkt("edges_wkt")',
+            "SymbolType": "Line",
+        })
+        generator.setSymbolType(QgsSymbol.SymbolType.Line)
+        generator.setSubSymbol(QgsLineSymbol([halo, line]))
+        return QgsFillSymbol([generator])
+
+    root = QgsRuleBasedRenderer.Rule(None)
+    for expression, label, width, alpha, halo_width in (
+        ('"complete" = 1', "whole", "0.3", 255, "0.7"),
+        ('"complete" = 0', "cut by the DEM edge", "0.18", 140, "0.5"),
+    ):
+        root.appendChild(QgsRuleBasedRenderer.Rule(
+            symbol(width, alpha, halo_width), filterExp=expression, label=label
+        ))
+    layer = QgsVectorLayer(
+        "MultiPolygon?field=basin_id:integer&field=complete:integer&field=edges_wkt:string",
+        "c", "memory",
+    )
+    layer.setRenderer(QgsRuleBasedRenderer(root))
+    document = QDomDocument()
+    layer.exportNamedStyle(document)
+    Path(path).write_text(document.toString(), encoding="utf-8")
     return str(path)
 
 
 def write_contour_qml(path):
     """Contours styled like the user's GSI basic-map contour layer.
 
-    Same as the project's "等高線-20250701～20261001" style: dark brown,
-    10 m lines (10, 30, 50, ...) very thin, 20 m lines (20, 40, ...) thin,
-    100 m lines thick, each with its own largest visible scale, and the layer
-    drawn at 60 % opacity. Built with the QGIS API and saved by QGIS itself,
+    Same as the project's "20160701-等高線" style: dark brown, 10 m lines
+    (10, 30, 50, ...) very thin, 20 m lines (20, 40, ...) thin, 100 m lines
+    thick, each with its own largest visible scale, and the layer drawn at
+    full opacity. Built with the QGIS API and saved by QGIS itself,
     so the rule-based style is always in a form this QGIS reads back.
     """
     from qgis.core import QgsLineSymbol, QgsRuleBasedRenderer, QgsVectorLayer
@@ -129,7 +166,7 @@ def write_contour_qml(path):
         rule.setMaximumScale(1)
         root.appendChild(rule)
     layer.setRenderer(QgsRuleBasedRenderer(root))
-    layer.setOpacity(0.6)
+    layer.setOpacity(1.0)
     document = QDomDocument()
     layer.exportNamedStyle(document)
     Path(path).write_text(document.toString(), encoding="utf-8")

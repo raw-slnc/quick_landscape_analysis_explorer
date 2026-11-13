@@ -15,6 +15,10 @@ copies fixed to nearby zoom levels, and the copy that draws the same picture
 gives the level. (Working it out from the scale alone was off by one level
 near the switch-over scales: with reprojection QGIS derives the resolution
 from the projected cells.)
+
+The test squares are drawn in the background (the tiles may have to be
+fetched first): the preview draws the layer itself meanwhile and switches to
+the copy once the level is known (ExportZoomFinder).
 """
 
 import re
@@ -23,13 +27,13 @@ from qgis.core import (
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
     QgsMapLayerStyle,
-    QgsMapRendererSequentialJob,
+    QgsMapRendererParallelJob,
     QgsMapSettings,
     QgsProject,
     QgsRasterLayer,
     QgsRectangle,
 )
-from qgis.PyQt.QtCore import QSize
+from qgis.PyQt.QtCore import QObject, QSize, pyqtSignal
 
 _PROBE_PIXELS = 256
 
@@ -62,7 +66,9 @@ def _estimated_zoom(extent, crs, pixels, zmin, zmax):
     )
 
 
-def _probe_image(layer, probe, crs, dpi):
+def _probe_job(layer, probe, crs, dpi):
+    """A background drawing of the test square (started, not waited for)."""
+
     settings = QgsMapSettings()
     settings.setLayers([layer])
     settings.setDestinationCrs(crs)
@@ -70,10 +76,9 @@ def _probe_image(layer, probe, crs, dpi):
     settings.setOutputSize(QSize(_PROBE_PIXELS, _PROBE_PIXELS))
     settings.setOutputDpi(dpi)
     settings.setExtent(probe)
-    job = QgsMapRendererSequentialJob(settings)
+    job = QgsMapRendererParallelJob(settings)
     job.start()
-    job.waitForFinished()
-    return job.renderedImage()
+    return job
 
 
 def _difference(image_a, image_b):
@@ -92,36 +97,98 @@ def _difference(image_a, image_b):
     return differing / total if total else 1.0
 
 
-def export_zoom(layer, extent, crs, paper_width_mm, dpi):
-    """Zoom level the export of this extent on this paper will use, or None."""
+class ExportZoomFinder(QObject):
+    """Finds the zoom level the export of an area will use, in the background.
 
-    source = layer.source()
-    if layer.crs() != _WEB_MERCATOR or extent.isEmpty() or paper_width_mm <= 0 or dpi <= 0:
-        return None
-    try:
-        zmin = int(_param(source, "zmin") or 0)
-        zmax = int(_param(source, "zmax") or 18)
-        pixels = paper_width_mm / 25.4 * dpi
-        guess = _estimated_zoom(extent, crs, pixels, zmin, zmax)
-    except Exception:  # noqa: BLE001 - any failure: draw the layer as it is
-        return None
-    # The square has the export's metres per pixel.
-    half = _PROBE_PIXELS / 2 * extent.width() / pixels
-    centre = extent.center()
-    probe = QgsRectangle(centre.x() - half, centre.y() - half, centre.x() + half, centre.y() + half)
-    reference = _probe_image(layer, probe, crs, dpi)
-    best = None
-    # QGIS lands at or a little below the guess (see the module notes).
-    for zoom in range(min(zmax, guess + 1), max(zmin, guess - 2) - 1, -1):
-        copy = fixed_zoom_copy(layer, zoom)
-        if copy is None:
-            continue
-        difference = _difference(reference, _probe_image(copy, probe, crs, dpi))
-        if best is None or difference < best[0]:
-            best = (difference, zoom)
+    ``found(zoom)`` is emitted once (``None`` when it cannot be told). The
+    test squares are drawn one after another without stopping QGIS.
+    """
+
+    found = pyqtSignal(object)
+
+    def __init__(self, layer, extent, crs, paper_width_mm, dpi, parent=None):
+        super().__init__(parent)
+        self._layer = layer
+        self._crs = crs
+        self._dpi = dpi
+        self._job = None
+        self._copy = None
+        self._reference = None
+        self._best = None
+        self._candidates = []
+        self._done = False
+        source = layer.source()
+        try:
+            if layer.crs() != _WEB_MERCATOR or extent.isEmpty() or paper_width_mm <= 0 or dpi <= 0:
+                raise ValueError("not a tile layer in Web Mercator")
+            zmin = int(_param(source, "zmin") or 0)
+            zmax = int(_param(source, "zmax") or 18)
+            pixels = paper_width_mm / 25.4 * dpi
+            guess = _estimated_zoom(extent, crs, pixels, zmin, zmax)
+        except Exception:  # noqa: BLE001 - any failure: draw the layer as it is
+            self._candidates = None
+            return
+        # QGIS lands at or a little below the guess (see the module notes).
+        self._candidates = list(range(min(zmax, guess + 1), max(zmin, guess - 2) - 1, -1))
+        # The square has the export's metres per pixel.
+        half = _PROBE_PIXELS / 2 * extent.width() / pixels
+        centre = extent.center()
+        self._probe = QgsRectangle(
+            centre.x() - half, centre.y() - half, centre.x() + half, centre.y() + half
+        )
+
+    def start(self):
+        if self._candidates is None:
+            self._finish(None)
+            return
+        self._run(self._layer, self._reference_drawn)
+
+    def cancel(self):
+        self._done = True
+        job, self._job = self._job, None
+        if job is not None:
+            job.cancelWithoutBlocking()
+
+    def _run(self, layer, then):
+        job = _probe_job(layer, self._probe, self._crs, self._dpi)
+        self._job = job
+        job.finished.connect(lambda: self._drawn(job, then))
+
+    def _drawn(self, job, then):
+        if self._done or job is not self._job:
+            return
+        self._job = None
+        then(job.renderedImage())
+
+    def _reference_drawn(self, image):
+        self._reference = image
+        self._next()
+
+    def _next(self):
+        while self._candidates:
+            zoom = self._candidates.pop(0)
+            copy = fixed_zoom_copy(self._layer, zoom)
+            if copy is None:
+                continue
+            self._copy = copy
+            self._run(copy, lambda image, zoom=zoom: self._candidate_drawn(zoom, image))
+            return
+        self._finish(self._best[1] if self._best else None)
+
+    def _candidate_drawn(self, zoom, image):
+        difference = _difference(self._reference, image)
+        if self._best is None or difference < self._best[0]:
+            self._best = (difference, zoom)
         if difference == 0:
-            break
-    return best[1] if best else None
+            self._finish(zoom)
+        else:
+            self._next()
+
+    def _finish(self, zoom):
+        if self._done:
+            return
+        self._done = True
+        self.found.emit(zoom)
 
 
 def fixed_zoom_copy(layer, zoom):

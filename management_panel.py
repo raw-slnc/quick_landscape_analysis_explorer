@@ -20,7 +20,7 @@ from qgis.PyQt.QtWidgets import (
 from qgis.core import QgsLayerTreeGroup, QgsLayerTreeLayer
 
 from .i18n import tr
-from .layer_combo import LayerTreeOrderComboBox, LayerVisibilityButton
+from .layer_combo import LayerTreeOrderComboBox, add_layer_choice
 
 
 _LAYER_ID_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -116,31 +116,27 @@ class AnalysisManagementPanel(QWidget):
         # compartments or roads for the export). Drawing order, top first:
         # optional 1, optional 2, overlay, analysis, base map.
         optional_box = QGroupBox(tr("Optional layers", "オプショナルレイヤー"), self)
-        # Both on one row, like the preview-layer row below.
+        # Both on one row, built like the preview-layer row below (the dialog
+        # gives all their labels one width), each combo with the layer-panel
+        # on/off button of its layer.
         optional_row = QHBoxLayout(optional_box)
         self.optionalLayerCombo1 = LayerTreeOrderComboBox(optional_box)
         self.optionalLayerCombo2 = LayerTreeOrderComboBox(optional_box)
-        # Like the preview-layer row: each combo has the layer-panel on/off
-        # button of its layer.
         self._optionalVisibilityButtons = []
+        self._optionalLabels = []
         for index, combo in enumerate(
             (self.optionalLayerCombo1, self.optionalLayerCombo2), start=1
         ):
             combo.setAllowEmptyLayer(True)
             combo.layerChanged.connect(lambda *_args: self.layersChanged.emit())
-            button = LayerVisibilityButton(combo, optional_box)
-            button.setFixedHeight(combo.sizeHint().height())
-            self._optionalVisibilityButtons.append(button)
-            if index > 1:
-                optional_row.addSpacing(8)
-            optional_row.addWidget(
-                QLabel(tr("Optional {}", "オプショナル{}").format(index), optional_box)
+            label, button = add_layer_choice(
+                optional_row,
+                tr("Optional {}", "オプショナル{}").format(index),
+                combo,
+                optional_box,
             )
-            combo_row = QHBoxLayout()
-            combo_row.setSpacing(4)
-            combo_row.addWidget(combo, 1)
-            combo_row.addWidget(button)
-            optional_row.addLayout(combo_row, 1)
+            self._optionalLabels.append(label)
+            self._optionalVisibilityButtons.append(button)
 
         # Below the analysis layers, so that the optional layers sit right
         # above the shared preview-layer row (all non-analysis layers together).
@@ -167,6 +163,9 @@ class AnalysisManagementPanel(QWidget):
 
     def optionalVisibilityButtons(self):
         return tuple(self._optionalVisibilityButtons)
+
+    def optionalLabels(self):
+        return tuple(self._optionalLabels)
 
     def packagePath(self):
         return self._packagePath

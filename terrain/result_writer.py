@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""GeoTIFF writers adapted from Forestry Operations Lite (GPL-3.0-or-later)."""
+"""GeoTIFF writers adapted from Forestry Operations Lite (GPL-2.0-or-later)."""
 
 """
 解析結果の保存モジュール

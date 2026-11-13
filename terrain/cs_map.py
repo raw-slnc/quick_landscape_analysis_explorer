@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Adapted from Forestry Operations Lite, licensed under GPL-3.0-or-later.
+# Adapted from Forestry Operations Lite, licensed under GPL-2.0-or-later.
 """CS MAP export raster synthesis.
 
 This module implements an original CS-style terrain visualization for FOL,

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Adapted from Forestry Operations Lite, licensed under GPL-3.0-or-later.
+# Adapted from Forestry Operations Lite, licensed under GPL-2.0-or-later.
 import math
 import os
 import numpy as np
@@ -128,10 +128,7 @@ class DEMLoader:
         options = dict(dstSRS=target_srs.ExportToWkt(), xRes=cell, yRes=cell,
                        resampleAlg=method, outputType=gdal.GDT_Float64,
                        srcNodata=float("nan"), dstNodata=float("nan"), errorThreshold=0)
-        preview = gdal.Warp("", source, format="VRT", **options)
-        if preview.RasterXSize * preview.RasterYSize > 100_000_000:
-            raise ValueError("Analysis DEM exceeds 100 million cells. Reduce the analysis extent.")
-        preview = None
+        # No size limit here: the dialog asks before large analyses.
         warped = gdal.Warp("", source, format="MEM", **options)
         if warped is None:
             raise RuntimeError("DEM conversion failed.")
@@ -580,15 +577,7 @@ class GSITileDEMLoader:
         nx = x1 - x0 + 1
         ny = y1 - y0 + 1
 
-        # メモリ上限チェック（float64 で約 800 MB 相当）
-        MAX_PIXELS = 100_000_000
-        if nx * ny * TS * TS > MAX_PIXELS:
-            raise MemoryError(
-                f"Extent too large (tiles: {nx * ny}, "
-                f"pixels: {nx * TS:,} × {ny * TS:,}).\n"
-                f"Zoom in or reduce the canvas extent and try again."
-            )
-
+        # 上限は設けない（大きな範囲は解析の前にダイアログで確認する）
         total_arr = np.full((ny * TS, nx * TS), np.nan, dtype=np.float64)
         n_total = nx * ny
         if progress_cb is not None:

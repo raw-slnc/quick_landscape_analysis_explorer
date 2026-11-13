@@ -176,6 +176,39 @@ def _s3_head_check(year: int, code: str, lp_type: str = "Grid") -> bool:
 
 # ── 年度解決 ──────────────────────────────────────────────────────────────────
 
+def resolve_all_years(codes: set, progress_cb=None, lp_type: str = "Grid") -> dict:
+    """コードセット → {code: [year, ...]}（新しい年度から順に、存在する年度すべて）。
+
+    同じタイルコードでも年度によって計測範囲が違い、新しい年度のタイルが
+    タイルの一部しか覆っていないことがある（例: 08OE8859 は 2020 年が一部のみ、
+    2019 年がほぼ全面）。新しい年度の欠けを古い年度で埋められるよう、
+    resolve_years() と違い最初に見つかった年度で止めない。
+    """
+    result: dict[str, list] = {}
+    groups: dict[tuple, set] = {}
+    for code in codes:
+        groups.setdefault((code[2:4], code[4:6]), set()).add(code)
+
+    priority = _YEAR_PRIORITY_GRID if lp_type == "Grid" else _YEAR_PRIORITY
+    total = len(groups)
+    for done, ((folder, xx), batch) in enumerate(groups.items(), start=1):
+        listed_any = False
+        for year in priority:
+            found = _s3_list_xx(year, folder, xx, lp_type)
+            listed_any = listed_any or bool(found)
+            for code in sorted(batch & found):
+                result.setdefault(code, []).append(year)
+        if not listed_any:
+            # LIST が使えない環境のフォールバック（HEAD で年度ごとに確認）
+            for code in sorted(batch):
+                for year in priority:
+                    if _s3_head_check(year, code, lp_type):
+                        result.setdefault(code, []).append(year)
+        if progress_cb:
+            progress_cb(done, total)
+    return result
+
+
 def resolve_years(codes: set, progress_cb=None, lp_type: str = "Grid") -> dict:
     """コードセット → {code: year} （S3 LISTをXX単位でバッチ処理、新年度優先）。
 
@@ -416,8 +449,41 @@ def download_grid_tif(code: str, year: int, out_dir: str, lp_type: str = "Grid",
 
 # ── GeoTIFF マージ ────────────────────────────────────────────────────────────
 
+def missing_share(tif_path: str, xmin: float, ymin: float, xmax: float, ymax: float) -> float:
+    """タイル GeoTIFF が bbox（タイルと重なる部分）を覆えていない割合（0〜1）。
+
+    タイルのラスタがタイル枠より小さい場合（はみ出した部分）も欠けとして数える。
+    """
+    import numpy as np
+    from osgeo import gdal
+
+    ds = gdal.Open(tif_path)
+    if ds is None:
+        return 1.0
+    gt = ds.GetGeoTransform()
+    width, height = ds.RasterXSize, ds.RasterYSize
+    cell_x, cell_y = gt[1], -gt[5]
+    total = max(1, int(round((xmax - xmin) / cell_x)) * int(round((ymax - ymin) / cell_y)))
+    col0 = max(0, int(np.floor((xmin - gt[0]) / cell_x)))
+    col1 = min(width, int(np.ceil((xmax - gt[0]) / cell_x)))
+    row0 = max(0, int(np.floor((gt[3] - ymax) / cell_y)))
+    row1 = min(height, int(np.ceil((gt[3] - ymin) / cell_y)))
+    if col1 <= col0 or row1 <= row0:
+        return 1.0
+    band = ds.GetRasterBand(1)
+    values = band.ReadAsArray(col0, row0, col1 - col0, row1 - row0)
+    nodata = band.GetNoDataValue()
+    valid = np.isfinite(values)
+    if nodata is not None:
+        valid &= values != nodata
+    ds = None
+    return max(0.0, 1.0 - float(valid.sum()) / total)
+
+
 def merge_tifs(tif_paths: list, out_path: str):
-    """複数 GeoTIFF を gdal.Warp でマージして out_path に保存。"""
+    """複数 GeoTIFF を gdal.Warp でマージして out_path に保存。
+
+    後ろの GeoTIFF ほど上に重なる（値なしの画素は下の値を残す）。"""
     from osgeo import gdal
     result = gdal.Warp(
         out_path, tif_paths,

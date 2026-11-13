@@ -12,6 +12,8 @@ NAGANO_BBOX = (137.30, 35.15, 138.90, 37.05)
 NETHERLANDS_BBOX = (3.2, 50.7, 7.3, 53.6)
 FRANCE_BBOX = (-5.5, 41.2, 9.8, 51.2)
 NEW_ZEALAND_BBOX = (166.0, -47.5, 179.0, -34.0)
+RHINELAND_PALATINATE_BBOX = (6.05, 48.9, 8.6, 51.0)
+BAVARIA_BBOX = (8.9, 47.2, 13.9, 50.6)
 
 # (group label, region, [(key, label)])
 GROUPS = [
@@ -36,6 +38,14 @@ GROUPS = [
     ]),
     (("France open data", "フランス オープンデータ"), FRANCE_BBOX, [
         ("ign_mnt", ("IGN LiDAR HD MNT 0.5 m", "IGN LiDAR HD MNT 0.5 m")),
+    ]),
+    # Germany: each state publishes its own DGM1; one group per state.
+    (("Germany: Rhineland-Palatinate open data", "ドイツ ラインラント＝プファルツ州 オープンデータ"),
+     RHINELAND_PALATINATE_BBOX, [
+        ("rlp_dgm1", ("Rhineland-Palatinate DGM1 1 m", "ラインラント＝プファルツ州 DGM1 1 m")),
+    ]),
+    (("Germany: Bavaria open data", "ドイツ バイエルン州 オープンデータ"), BAVARIA_BBOX, [
+        ("by_dgm1", ("Bavaria DGM1 1 m", "バイエルン州 DGM1 1 m")),
     ]),
     (("New Zealand open data", "ニュージーランド オープンデータ"), NEW_ZEALAND_BBOX, [
         ("linz_dem", ("LINZ DEM 1 m", "LINZ DEM 1 m")),
