@@ -117,7 +117,7 @@ from .core import session
 from .management_panel import AnalysisManagementPanel
 from .order_arrows import LayerOrderArrows
 from .plugin import PLUGIN_NAME
-from .terrain import dem_sources, remote_dem, watershed
+from .terrain import dem_sources, remote_dem, watershed, world_country
 from .terrain.styles import SLOPE_COLORS
 
 
@@ -423,6 +423,13 @@ class GroupedSourceComboBox(QComboBox):
         option = QStyleOptionComboBox()
         self.initStyleOption(option)
         option.currentText = option.currentText.strip()
+        if self.currentIndex() < 0:
+            # This paintEvent replaces QComboBox's, which draws the placeholder.
+            option.currentText = self.placeholderText()
+            option.palette.setColor(
+                QPalette.ColorRole.ButtonText,
+                self.palette().color(QPalette.ColorRole.PlaceholderText),
+            )
         painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
         painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
 
@@ -2432,7 +2439,7 @@ class LandscapeExplorerDialog(QDialog):
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        profile_title = QLabel(tr("Profile", "プロファイル"), section)
+        profile_title = QLabel(tr("Region", "地域"), section)
         title_font = profile_title.font()
         title_font.setBold(True)
         profile_title.setFont(title_font)
@@ -2452,12 +2459,17 @@ class LandscapeExplorerDialog(QDialog):
         box = QGroupBox(section)
         form = QFormLayout(box)
 
-        self.profileLabel = QLabel(tr("Japan — terrain", "日本 — 地形"))
+        # Filled by _update_region_label when the preview or the source changes.
+        self.profileLabel = QLabel("—")
+        # Long region names wrap rather than widen the panel.
+        self.profileLabel.setWordWrap(True)
         self.profileLabel.setToolTip(
             tr(
-                "Terrain analysis from a local DEM or a downloaded DEM "
-                "(Japan, and some sources in other countries).",
-                "ローカルDEMまたはダウンロードしたDEM（日本と、海外の一部の取得元）による地形解析です。",
+                "Country and region of the chosen DEM source; for other sources, "
+                "the country at the preview centre from the world map in QGIS. "
+                "Then the preview centre (WGS84).",
+                "選んでいる取得元の国と地域です。それ以外の取得元では、QGISの世界地図による"
+                "プレビュー中心の国です。続けてプレビュー中心の緯度経度（WGS84）です。",
             )
         )
         form.addRow(self.profileLabel)
@@ -2551,6 +2563,7 @@ class LandscapeExplorerDialog(QDialog):
                 item.setData(tr(*label), _DEM_LABEL_ROLE)
                 model.appendRow(item)
         self.demSourceCombo.setModel(model)
+        self.demSourceCombo.setPlaceholderText(tr("Choose a source", "取得元を選んでください"))
         self._set_dem_source(dem_sources.DEFAULT_KEY)
         self.demSourceCombo.popupAboutToShow.connect(self._refresh_dem_source_availability)
         form.addRow(tr("Source", "取得元"), self.demSourceCombo)
@@ -2594,10 +2607,13 @@ class LandscapeExplorerDialog(QDialog):
             self.demSourceNote.fontMetrics().horizontalAdvance(tr("M", "あ"))
         )
         # Always two lines high, with or without a note, so the section keeps
-        # its height whichever source is chosen.
-        self.demSourceNote.setFixedHeight(
-            2 * self.demSourceNote.fontMetrics().lineSpacing() + 2
-        )
+        # its height whichever source is chosen. The label measures two lines
+        # itself: line spacing alone can be less than a line's height (some
+        # fonts), and a wrapping label adds a little room, so a height from
+        # the line spacing cut off the second line.
+        self.demSourceNote.setText("M\nM")
+        self.demSourceNote.setFixedHeight(self.demSourceNote.heightForWidth(1000))
+        self.demSourceNote.clear()
         form.addRow(self.demSourceNote)
 
         self._demAvailabilityTimer = QTimer(self)
@@ -2612,6 +2628,10 @@ class LandscapeExplorerDialog(QDialog):
         return self.demSourceCombo.currentData(Qt.ItemDataRole.UserRole)
 
     def _set_dem_source(self, key):
+        if not key:
+            # No source (cleared when the preview left its region).
+            self.demSourceCombo.setCurrentIndex(-1)
+            return
         index = self.demSourceCombo.findData(key, Qt.ItemDataRole.UserRole)
         if index >= 0:
             self.demSourceCombo.setCurrentIndex(index)
@@ -2631,12 +2651,60 @@ class LandscapeExplorerDialog(QDialog):
             return None
         return (box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum())
 
+    def _preview_center84(self):
+        """The preview centre as WGS84 (lon, lat), or None."""
+
+        canvas = getattr(self, "previewCanvas", None)
+        if canvas is None or canvas.extent().isEmpty():
+            return None
+        crs = canvas.mapSettings().destinationCrs()
+        if not crs.isValid():
+            return None
+        try:
+            point = QgsCoordinateTransform(
+                crs,
+                QgsCoordinateReferenceSystem("EPSG:4326"),
+                QgsProject.instance().transformContext(),
+            ).transform(canvas.extent().center())
+        except QgsCsException:
+            return None
+        return (point.x(), point.y())
+
+    def _update_region_label(self):
+        """Region and preview centre at the top of the window.
+
+        A regional network source gives its own region. Otherwise (local DEM,
+        Terrarium, no source) the country at the preview centre comes from
+        the world map in QGIS: under the plugin's name for countries with a
+        regional source, else under the world map's English name.
+        """
+
+        label = getattr(self, "profileLabel", None)
+        if label is None:
+            return
+        centre = self._preview_center84()
+        country, region = dem_sources.source_region(self._dem_source_key()) or (None, None)
+        if country is None and centre is not None:
+            found = world_country.country_at(*centre)
+            if found is not None:
+                code, english = found
+                country = dem_sources.COUNTRY_NAMES.get(code, (english, english))
+        # Country - region : latitude, longitude
+        place = " - ".join(tr(*name) for name in (country, region) if name is not None)
+        parts = [text for text in (
+            place, world_country.lat_lon_text(*centre) if centre is not None else ""
+        ) if text]
+        label.setText(tr(": ", " ： ").join(parts) or "—")
+
     def _refresh_dem_source_availability(self, *args):
         """Show only the regional sources the preview overlaps.
 
         Sources that cannot be used here are left out of the list (and stay
         disabled, so the wheel or keys cannot pick them); a group header is
-        left out when none of its sources can be used.
+        left out when none of its sources can be used. When the preview
+        leaves the chosen source's region, the choice is cleared and not
+        brought back on return. A source in its region that this QGIS cannot
+        read (LINZ without LERC) stays chosen, greyed, with its reason.
         """
 
         del args
@@ -2648,6 +2716,11 @@ class LandscapeExplorerDialog(QDialog):
         # be used here; then they stay grey with their sources.
         headers = []
         hidden_rows = []
+        outside_rows = set()
+        # A region box can reach into neighbouring countries (France's covers
+        # western Germany), so the country's shape in QGIS's world map is
+        # checked too: once per country in each refresh.
+        near_country = {}
         for row in range(model.rowCount()):
             item = model.item(row)
             key = item.data(Qt.ItemDataRole.UserRole)
@@ -2655,8 +2728,14 @@ class LandscapeExplorerDialog(QDialog):
                 headers.append([item, False])
                 continue
             available = dem_sources.overlaps(dem_sources.region_for(key), bbox84)
+            code = dem_sources.country_for(key)
+            if available and code and bbox84 is not None:
+                if code not in near_country:
+                    near_country[code] = world_country.touches_country(code, bbox84)
+                available = near_country[code] is not False
             tooltip = ""
             if not available:
+                outside_rows.add(row)
                 tooltip = tr(
                     "The preview is outside this source's area.",
                     "プレビューが提供範囲の外です。",
@@ -2681,12 +2760,14 @@ class LandscapeExplorerDialog(QDialog):
                 text_brush if any_available else None, Qt.ItemDataRole.ForegroundRole
             )
             hidden_rows.append((header.row(), not any_available))
+        if self.demSourceCombo.currentIndex() in outside_rows:
+            self.demSourceCombo.setCurrentIndex(-1)
         view = self.demSourceCombo.view()
         if hasattr(view, "setRowHidden"):
             current = self.demSourceCombo.currentIndex()
             for row, hidden in hidden_rows:
-                # The chosen source stays listed so the combo can show it
-                # (its note says why it cannot be used here).
+                # A chosen source that cannot be read here (LERC) stays
+                # listed so the combo can show it with its reason.
                 view.setRowHidden(row, hidden and row != current)
         self._dem_source_changed()
 
@@ -4098,11 +4179,14 @@ class LandscapeExplorerDialog(QDialog):
         if hasattr(self, "localDemRubber"):
             self._update_local_dem_footprint()
         note = _dem_source_note(key)
-        if not self._dem_source_available():
+        if not key:
+            note = tr("Choose a source.", "取得元を選んでください。")
+        elif not self._dem_source_available():
             # Why it is unavailable (outside the region, or no LERC support).
             item = self.demSourceCombo.model().item(self.demSourceCombo.currentIndex())
             note = item.toolTip() if item is not None else note
         self.demSourceNote.setText(note)
+        self._update_region_label()
         # Remember the source before this change, to go back to it when the
         # Terrarium notice is not accepted.
         self._demSourceBeforeChange = getattr(self, "_demSourceCurrent", None)
@@ -4189,7 +4273,7 @@ class LandscapeExplorerDialog(QDialog):
             and not previous.startswith("terrarium:")
             and not self._confirm_terrarium()
         ):
-            self._set_dem_source(previous or dem_sources.DEFAULT_KEY)
+            self._set_dem_source(previous or None)
             return
         if self._dem_source_key() == "local":
             # The DEM section has no room for this under the layer combo, so
@@ -4645,7 +4729,7 @@ class LandscapeExplorerDialog(QDialog):
         self._refresh_saved_analyses(package_path)
         self._add_package_layers(package_path, manifest)
         self._overwritePackagePath = None
-        fallback = _grass_fallback_text(manifest)
+        fallback = _coverage_gap_text(manifest) + _grass_fallback_text(manifest)
         if self._enter_management(package_path):
             # The switch cleared the status; the details are in the summary.
             self.resultEdit.setPlainText(
@@ -6379,6 +6463,7 @@ _TERRAIN_PATTERNS_JA = (
     (r"Nagano DEM tile (\d+)/(\d+) \((.+?)\): downloading (.+) MB\.\.\.",
      r"長野県DEMタイル \1/\2（\3）：ダウンロードしています \4 MB…"),
     (r"Fetching (.+)… (\d+)/(\d+)", r"\1を取得しています… \2/\3"),
+    (r"Checking where (.+) has data…", r"\1のデータがある範囲を確認しています…"),
     (r"Reading elevation data… (\d+)%", r"標高データを読み込んでいます… \1%"),
     (r"Reading (.+) \((\d+) tile\(s\)\)…", r"\1を読み込んでいます（\2タイル）…"),
 )
@@ -6478,6 +6563,25 @@ def _terrain_error_text(error):
         if match:
             return match.expand(replacement)
     return error
+
+
+def _coverage_gap_text(manifest):
+    """A line (with a leading newline) when the DEM left part of the area
+    blank (outside the source's coverage, such as across a state border),
+    or ""."""
+
+    grid = (manifest or {}).get("analysis_grid") or {}
+    covered = grid.get("valid_coverage_percent")
+    if covered is None or covered >= 99.9:
+        return ""
+    missing = 100.0 - covered
+    share = tr("under 1%", "1%未満") if missing < 1.0 else "{:.0f}%".format(missing)
+    return "\n" + tr(
+        "Part of the analysis area ({}) has no data from this source; "
+        "that part is blank.",
+        "解析範囲の一部（{}）に、この取得元のデータがありませんでした。"
+        "その部分は空白です。",
+    ).format(share)
 
 
 def _grass_fallback_text(manifest):
@@ -6669,11 +6773,11 @@ def _dem_source_note(key):
         "by_dgm1": ("1 m tiles; large areas take time.",
                     "1 mタイル。広い範囲は時間がかかります。"),
         "terrarium:2m": ("Global tiles for small areas. Detail differs by region.",
-                         "全球のタイル。狭い範囲向け。解像度は地域で差があります。"),
+                         "解像度は地域で差があります。"),
         "terrarium:5m": ("Global tiles. Detail differs by region.",
-                         "全球のタイル。解像度は地域で差があります。"),
+                         "解像度は地域で差があります。"),
         "terrarium:10m": ("Global tiles for wide areas. Detail differs by region.",
-                          "全球のタイル。広い範囲向け。解像度は地域で差があります。"),
+                          "解像度は地域で差があります。"),
         "gsi:1m": ("Laser survey areas only.",
                    "航空レーザ測量の範囲だけです。"),
     }

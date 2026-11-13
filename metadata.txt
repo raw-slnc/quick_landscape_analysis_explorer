@@ -3,7 +3,7 @@ name=Quick Landscape Analysis Explorer
 qgisMinimumVersion=3.44
 qgisMaximumVersion=4.99
 description=Makes terrain maps of an area from local or downloaded DEMs, saves each analysis as a portable ZIP, and exports the preview as a GeoPDF, image or print layout, and the analysis files as layers.
-version=0.1.0
+version=0.1.1
 author=Hideharu Masai
 email=hideharumasai@void.mints.ne.jp
 repository=https://github.com/raw-slnc/quick_landscape_analysis_explorer
@@ -11,6 +11,7 @@ tracker=https://github.com/raw-slnc/quick_landscape_analysis_explorer/issues
 homepage=https://github.com/raw-slnc/quick_landscape_analysis_explorer
 about=Quick Landscape Analysis Explorer makes hillshade, slope, CS Map, contour and catchment layers for a polygon area or the preview extent. The DEM comes from a local file or is downloaded from GSI elevation tiles (Japan), VIRTUAL SHIZUOKA (Shizuoka), Nagano Prefecture open data, AHN4 (Netherlands), IGN LiDAR HD (France), Rhineland-Palatinate and Bavaria DGM1 (Germany), LINZ (New Zealand) or AWS Terrain Tiles (global). Each analysis is saved as one portable ZIP beside the QGIS project. What the A-series preview shows can be exported as a GeoPDF with separate layers, an image or a print layout, and the analysis files as styled layers, from which a print layout can also be made later. Catchments use GRASS r.watershed where available, otherwise the plugin's own computation. English user interface with a Japanese language switch.
 changelog=
+    0.1.1 - [IMPORTANT] The top of the window now shows the country and region of the chosen DEM source (or, for other sources, the country at the preview centre) with the latitude and longitude of the preview centre. DEM sources are offered only near their own country, and the chosen source is cleared when the preview moves outside its area. Improved DEM fetching: an area without IGN LiDAR HD data is recognised quickly, and in Rhineland-Palatinate an older survey is used when the newest file of a tile is missing. After an analysis, a notice tells you when part of the area has no data from the chosen source. Fixed the note under the DEM source being cut off.
     0.1.0 - First public release.
 category=Analysis
 tags=landscape,terrain,watershed,forestry,analysis,dem,geopdf,field survey,open data,japan,shizuoka,nagano,netherlands,france,germany,bavaria,rhineland-palatinate,new zealand,調査,日本,位置情報,印刷,オープンデータ,解析

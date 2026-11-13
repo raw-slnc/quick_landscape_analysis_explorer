@@ -49,6 +49,8 @@ REMOTE_SOURCES = {
         kind="ogc", url=_IGN_WMSR,
         layer="IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93",
         epsg=2154, cell=0.5, chunk_px=2000,
+        # WMS-R serves any image size: one coarse look first (see _probe_ogc).
+        probe_px=512,
         label="IGN LiDAR HD MNT 0.5m", prefix="ign_lidarhd_mnt",
         provider="IGN (Institut national de l'information géographique et forestière)",
         licence="Licence Ouverte / Open Licence (Etalab 2.0)",
@@ -167,17 +169,67 @@ def _finish_mosaic(ctx, sources, out_dir, prefix, epsg, bbox=None):
     if out is None:
         raise RemoteDemError("Could not write the elevation GeoTIFF.")
     band = out.GetRasterBand(1)
-    nodata = band.GetNoDataValue()
-    arr = band.ReadAsArray()
+    valid = _valid_cells(band.ReadAsArray(), band.GetNoDataValue())
     out = None
+    if not valid.any():
+        raise RemoteDemError("No elevation data for this area (outside the source coverage).")
+    return tif_path
+
+
+def _valid_cells(arr, nodata):
     valid = np.isfinite(arr)
     if nodata is not None:
         valid &= arr != nodata
     # AHN uses the float32 maximum as NoData on its 0.5 m grid.
     valid &= np.abs(arr) < 1e30
+    return valid
+
+
+def _probe_ogc(ctx, spec, bbox, parts_dir):
+    """One coarse request over the whole area before the full-resolution chunks.
+
+    Outside its coverage IGN still sends every chunk in full (16 MB of
+    NoData each), so an area without data took as long as one with data.
+    Raises when the coarse look holds no values. Otherwise returns a test
+    telling whether a chunk lies wholly in the empty part, with one coarse
+    cell of margin so thin strips of data are kept; None when the look
+    itself fails (then every chunk is fetched, as before).
+    """
+    from osgeo import gdal
+
+    x0, y0, x1, y1 = bbox
+    scale = max(x1 - x0, y1 - y0) / spec["probe_px"]
+    w = max(1, int(math.ceil((x1 - x0) / scale)))
+    h = max(1, int(math.ceil((y1 - y0) / scale)))
+    ctx.report(f"Checking where {spec['label']} has data…")
+    url = spec["url"].format(layer=spec["layer"], x0=x0, y0=y0, x1=x1, y1=y1, w=w, h=h)
+    dest = os.path.join(parts_dir, "probe.tif")
+    try:
+        _http_download(ctx, url, dest)
+        dataset = gdal.Open(dest)
+        band = dataset.GetRasterBand(1)
+        arr = band.ReadAsArray()
+        # Scaled down, IGN blends its NoData (-9999) into values such as
+        # -9999.001 and, at the data's edge, into mixed values; no land is
+        # below -1000 m.
+        valid = _valid_cells(arr, band.GetNoDataValue()) & (arr > -1000)
+        dataset = None
+    except Exception:  # noqa: BLE001 - the look is only a shortcut
+        ctx.check()  # but a cancel during it still stops the job
+        return None
     if not valid.any():
         raise RemoteDemError("No elevation data for this area (outside the source coverage).")
-    return tif_path
+    cell_x = (x1 - x0) / w
+    cell_y = (y1 - y0) / h
+
+    def empty(cx0, cy0, cx1, cy1):
+        c0 = max(int((cx0 - x0) / cell_x) - 1, 0)
+        c1 = min(int(math.ceil((cx1 - x0) / cell_x)) + 1, w)
+        r0 = max(int((y1 - cy1) / cell_y) - 1, 0)
+        r1 = min(int(math.ceil((y1 - cy0) / cell_y)) + 1, h)
+        return not valid[r0:r1, c0:c1].any()
+
+    return empty
 
 
 def _fetch_ogc(ctx, spec, bbox, out_dir):
@@ -198,13 +250,20 @@ def _fetch_ogc(ctx, spec, bbox, out_dir):
         y += step
     parts_dir = os.path.join(out_dir, f"parts_{spec['prefix']}")
     os.makedirs(parts_dir, exist_ok=True)
+    empty = None
+    if spec.get("probe_px"):
+        empty = _probe_ogc(ctx, spec, (x0, y0, x1, y1), parts_dir)
     paths = []
+    skipped = False
     n = len(xs) * len(ys)
     k = 0
     for cy0, cy1 in ys:
         for cx0, cx1 in xs:
             ctx.check()
             k += 1
+            if empty is not None and empty(cx0, cy0, cx1, cy1):
+                skipped = True
+                continue
             ctx.report(f"Fetching {spec['label']}… {k}/{n}")
             url = spec["url"].format(
                 layer=spec["layer"], x0=cx0, y0=cy0, x1=cx1, y1=cy1,
@@ -212,8 +271,14 @@ def _fetch_ogc(ctx, spec, bbox, out_dir):
             dest = os.path.join(parts_dir, f"part_{k:04d}.tif")
             _http_download(ctx, url, dest)
             paths.append(dest)
+    if not paths:
+        raise RemoteDemError("No elevation data for this area (outside the source coverage).")
     ctx.report("Combining…")
-    return _finish_mosaic(ctx, paths, out_dir, spec["prefix"], spec["epsg"])
+    # With chunks left out, keep the whole area (the gaps become NoData).
+    return _finish_mosaic(
+        ctx, paths, out_dir, spec["prefix"], spec["epsg"],
+        bbox=(x0, y0, x1, y1) if skipped else None,
+    )
 
 
 _TOPO50_LETTERS = "".join(c for c in string.ascii_uppercase if c not in "IO")
@@ -405,8 +470,11 @@ def _fetch_de_tiles(ctx, spec, bbox, out_dir):
             try:
                 _http_download(ctx, url, dest)
             except urllib.error.HTTPError as error:
-                if error.code == 404:  # no tile here (outside the state)
-                    break
+                if error.code == 404:
+                    # No such file (outside the state, or a year the list
+                    # names but the server does not have): try the next
+                    # older survey of this tile, if any.
+                    continue
                 raise
             layered.append((rank, _normalised_tile(dest, spec["epsg"], cell)))
             if wanted[key][rank] is not None:

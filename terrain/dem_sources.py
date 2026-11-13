@@ -63,6 +63,46 @@ GROUPS = [
 
 DEFAULT_KEY = "gsi:best"
 
+# Countries with a regional source, by ISO code: their names here are used
+# in place of the English names of QGIS's world map.
+COUNTRY_NAMES = {
+    "JP": ("Japan", "日本"),
+    "NL": ("Netherlands", "オランダ"),
+    "FR": ("France", "フランス"),
+    "DE": ("Germany", "ドイツ"),
+    "NZ": ("New Zealand", "ニュージーランド"),
+}
+
+# Country (ISO code) and region within it shown in the window for a regional
+# network source (by key kind); None = the whole country.
+SOURCE_REGIONS = {
+    "gsi": ("JP", None),
+    "vs_lp": ("JP", ("Shizuoka", "静岡県")),
+    "nagano_sabo": ("JP", ("Nagano", "長野県")),
+    "nagano_rinmu": ("JP", ("Nagano", "長野県")),
+    "ahn_dtm": ("NL", None),
+    "ign_mnt": ("FR", None),
+    "rlp_dgm1": ("DE", ("Rhineland-Palatinate", "ラインラント＝プファルツ州")),
+    "by_dgm1": ("DE", ("Bavaria", "バイエルン州")),
+    "linz_dem": ("NZ", None),
+}
+
+
+def country_for(key):
+    """ISO code of the country of a regional network source, or None."""
+    found = SOURCE_REGIONS.get((key or "").partition(":")[0])
+    return found[0] if found else None
+
+
+def source_region(key):
+    """(country (English, Japanese), region (English, Japanese) or None) of a
+    regional network source, or None for other sources."""
+    found = SOURCE_REGIONS.get((key or "").partition(":")[0])
+    if found is None:
+        return None
+    code, region = found
+    return COUNTRY_NAMES[code], region
+
 
 def region_for(key):
     for _group, region, items in GROUPS:

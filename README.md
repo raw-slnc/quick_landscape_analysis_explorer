@@ -32,6 +32,10 @@ right of the window opens its overview page.
 - An independent window: it can be minimized, reached with Alt+Tab, or put
   behind QGIS.
 - English user interface with a Japanese switch stored in QGIS settings.
+- At the top, as "country - region: latitude, longitude": the country and
+  region of the chosen DEM source (for a local DEM or the global source, the
+  country at the preview centre from the world map in QGIS), and the preview
+  centre (WGS84).
 - The left preview is an A-series sheet, portrait or landscape. Its first view
   follows the QGIS main map; it can then be panned and zoomed on its own, and
   a button copies the main map's centre, CRS and scale again.
@@ -44,9 +48,11 @@ right of the window opens its overview page.
   either the selected polygons, or (with "selected features only" off) the
   polygons in the preview, cut to the preview. Many polygons are combined in
   the analysis job, with progress; broken polygons are repaired first.
-- DEM source: one list, grouped by region. A source stays listed but cannot
-  be chosen while the preview is outside its region, or when this QGIS cannot
-  read its data; its tooltip says why.
+- DEM source: one list, grouped by region. Only the sources whose region the
+  preview touches are listed; when the preview moves outside the chosen
+  source's region, the choice is cleared and is not brought back on return.
+  A source this QGIS cannot read (LINZ without LERC) stays listed but greyed
+  out; its tooltip says why.
 
   | Source | Cell | Provider / licence |
   |---|---|---|
