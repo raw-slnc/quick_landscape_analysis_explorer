@@ -6,8 +6,6 @@ saved as one portable ZIP beside the QGIS project. What the preview shows can
 be exported as a GeoPDF, an image or a print layout, and the analysis files
 as layers.
 
-Version 0.1.0, the first public release.
-
 ## Purpose
 
 QLAE is for terrain reconnaissance: reading the landform of an
