@@ -1,6 +1,6 @@
 [general]
 name=Quick Landscape Analysis Explorer
-qgisMinimumVersion=3.34
+qgisMinimumVersion=3.44
 qgisMaximumVersion=4.99
 description=Makes terrain maps of an area from local or downloaded DEMs, saves each analysis as a portable ZIP, and exports the preview as a GeoPDF, image or print layout, and the analysis files as layers.
 version=0.1.0
