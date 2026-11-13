@@ -5202,7 +5202,7 @@ def _write_image_crs(path, crs_wkt):
             dataset.SetProjection(crs_wkt)
             dataset = None
     except Exception:  # noqa: BLE001 - the image itself is already saved
-        pass
+        return
 
 
 def _timestamp_note_text():

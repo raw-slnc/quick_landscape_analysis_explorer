@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
-"""GeoTIFF writers adapted from Forestry Operations Lite (GPL-2.0-or-later)."""
+"""GeoTIFF writers adapted from Forestry Operations Lite (GPL-2.0-or-later).
 
-"""
 解析結果の保存モジュール
   save_raster          : numpy配列 → GeoTIFF
   save_rgba_raster     : RGBA配列 → GeoTIFF
@@ -17,7 +16,7 @@ import numpy as np
 from datetime import datetime
 
 try:
-    from osgeo import gdal, ogr, osr
+    from osgeo import gdal
     gdal.UseExceptions()
     HAS_GDAL = True
 except ImportError:
@@ -97,4 +96,3 @@ def save_rgba_raster(data, gt, crs_wkt, out_dir, name_prefix, overwrite=False):
     ds.FlushCache()
     ds = None
     return path
-

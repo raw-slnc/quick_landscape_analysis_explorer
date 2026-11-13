@@ -207,7 +207,7 @@ def _log_grass_failure(message):
             Qgis.MessageLevel.Warning,
         )
     except Exception:  # noqa: BLE001 - logging must not stop the analysis
-        pass
+        return
 
 
 def _grass_basins(dem_path, basin_path, threshold, work_dir, context, feedback):

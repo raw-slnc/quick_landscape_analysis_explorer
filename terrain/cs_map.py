@@ -301,4 +301,3 @@ def compute_cs_map(dem, cell_size):
     rgba[..., 2] = np.clip(blue, 0, 255).astype(np.uint8)
     rgba[..., 3] = np.where(valid, 255, 0).astype(np.uint8)
     return rgba
-

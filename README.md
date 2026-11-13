@@ -12,13 +12,15 @@ QLAE is for terrain reconnaissance: reading the landform of an
 area quickly from a DEM, and taking the result out in the form each task
 needs.
 
-- GeoPDF: a GeoPDF for field surveys. It opens in field map apps that read
-  GeoPDF, such as Avid Maps Extra (a PWA by the author of this plugin;
-  overview page in English, app in Japanese), linked at the bottom right of
-  the window.
+- GeoPDF: a GeoPDF for field surveys, to be opened in a field map app that
+  reads GeoPDF.
 - Image: images for documents outside QGIS.
 - Layers: layers kept in QGIS as survey information.
 - Print layout: terrain information as a temporary record.
+
+Avid Maps Extra is one such field map app: a PWA made by the author of this
+plugin (overview page in English, app in Japanese). The link at the bottom
+right of the window opens its overview page.
 
 ## Window
 
@@ -57,6 +59,17 @@ needs.
   print layout. The print layout credits the German states in the form they
   ask for, marking the data as changed ("[Daten bearbeitet]", "Daten
   verändert").
+
+  The two Nagano index files in `terrain/data/` (the same as in Forestry
+  Operations Lite) were made by the author from public data on
+  G空間情報センター: `nagano_sabo_dem_index.json` from the ZIP central
+  directories of the Sabo Division 0.5 m DEM
+  (https://www.geospatial.jp/ckan/dataset/r3-4-50cmdem), and
+  `nagano_rinmu_sheet_index.json` from the index map Shapefiles of the
+  Forestry Department 0.5 m DEM
+  (https://www.geospatial.jp/ckan/dataset/nagano-dem). They hold only which
+  tile is in which package or sheet, used to pick the tiles to download; the
+  DEM data itself is not bundled.
 - Outputs:
   - Hillshade.
   - Slope in degrees, in 5° classes from 20° to 45° (the slope colour classes

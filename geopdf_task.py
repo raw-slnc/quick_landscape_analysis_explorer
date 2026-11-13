@@ -22,7 +22,8 @@ import os
 import shutil
 import tempfile
 import threading
-import xml.etree.ElementTree as ElementTree
+# Only builds the GeoPDF composition XML for GDAL; no XML is read or parsed.
+import xml.etree.ElementTree as ElementTree  # nosec B405
 
 from qgis.PyQt.QtCore import QMarginsF, QSize, QSizeF, pyqtSignal
 from qgis.PyQt.QtGui import QColor, QPageLayout, QPageSize, QPainter, QPdfWriter, QTransform

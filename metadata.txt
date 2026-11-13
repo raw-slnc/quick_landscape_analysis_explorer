@@ -13,7 +13,7 @@ about=Quick Landscape Analysis Explorer makes hillshade, slope, CS Map, contour 
 changelog=
     0.1.0 - First public release.
 category=Analysis
-tags=landscape,terrain,watershed,forestry,japan,open data,analysis
+tags=landscape,terrain,watershed,forestry,analysis,dem,geopdf,field survey,open data,japan,shizuoka,nagano,netherlands,france,germany,bavaria,rhineland-palatinate,new zealand,調査,日本,位置情報,印刷,オープンデータ,解析
 icon=icon.svg
 experimental=False
 deprecated=False

@@ -101,8 +101,10 @@ class DEMLoader:
             "source_geotransform": list(gt),
             "elevation_unit": "metres (assumed when source unit is unspecified)",
         }
-        if metric and regular and (target_cell_size is None or
-                math.isclose(gt[1], target_cell_size, rel_tol=1e-9)):
+        same_cell = target_cell_size is None or math.isclose(
+            gt[1], target_cell_size, rel_tol=1e-9
+        )
+        if metric and regular and same_cell:
             self.cell_size = gt[1]
             record.update({"analysis_crs_wkt": self.crs_wkt,
                            "analysis_geotransform": list(gt),
@@ -383,7 +385,7 @@ class GSITileDEMLoader:
         # 以降は DEMLoader と同様に data / gt / crs_wkt / cell_size が使える
     """
 
-    SENTINEL  = "__GSI_DEM5A__"
+    SENTINEL = "__GSI_DEM5A__"
     TILE_SIZE = 256
 
     # 解像度優先順: 1m → 5m → 10m
@@ -404,13 +406,13 @@ class GSITileDEMLoader:
     ]
 
     def __init__(self):
-        self.path     = self.SENTINEL
-        self.data     = None
-        self.gt       = None
-        self.crs_wkt  = None
+        self.path = self.SENTINEL
+        self.data = None
+        self.gt = None
+        self.crs_wkt = None
         self.cell_size = None
-        self.nodata   = None
-        self._ds      = None   # DEMLoader 互換ダミー
+        self.nodata = None
+        self._ds = None   # DEMLoader 互換ダミー
 
     # ── タイル座標変換 ────────────────────────────────────────────────
 
@@ -476,7 +478,7 @@ class GSITileDEMLoader:
                      + g.astype(np.uint32) * 256
                      + b.astype(np.uint32))
                 arr = np.where(u == 0x800000, np.nan,
-                               np.where(u <  0x800000, u.astype(np.float64) * 0.01,
+                               np.where(u < 0x800000, u.astype(np.float64) * 0.01,
                                         (u.astype(np.int32) - 0x1000000).astype(np.float64) * 0.01))
 
             return arr.astype(np.float64), None
@@ -528,11 +530,11 @@ class GSITileDEMLoader:
 
         # ── EPSG:3857 (Web Mercator) でジオトランスフォームを設定 ──────────
         WORLD_M = 20037508.3428
-        tile_m  = 2.0 * WORLD_M / (2 ** zoom_used)
-        px_m    = tile_m / TS
+        tile_m = 2.0 * WORLD_M / (2 ** zoom_used)
+        px_m = tile_m / TS
 
         x_origin = -WORLD_M + x0 * tile_m
-        y_origin =  WORLD_M - y0 * tile_m
+        y_origin = WORLD_M - y0 * tile_m
 
         # EPSG:3857 CRS
         try:
@@ -553,11 +555,11 @@ class GSITileDEMLoader:
         center_lat = (lat_min + lat_max) / 2
         corrected_cell_size = px_m * math.cos(math.radians(abs(center_lat)))
 
-        self.data      = total_arr
-        self.gt        = (x_origin, px_m, 0.0, y_origin, 0.0, -px_m)
-        self.crs_wkt   = crs_wkt
+        self.data = total_arr
+        self.gt = (x_origin, px_m, 0.0, y_origin, 0.0, -px_m)
+        self.crs_wkt = crs_wkt
         self.cell_size = corrected_cell_size
-        self.nodata    = None
+        self.nodata = None
         return self
 
     def _fetch_tiles(self, lon_min, lat_min, lon_max, lat_max, tile_url, zoom, encoding="gsi", cancel_cb=None,
@@ -697,4 +699,3 @@ def save_as_geotiff(loader, output_path):
     ds = None  # ファイルをクローズ
 
     return output_path
-

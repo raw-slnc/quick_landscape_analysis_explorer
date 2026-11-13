@@ -201,7 +201,7 @@ def create_terrain_package(specification, context):
             context.check()
 
         context.report("Writing analysis package...")
-        dem_path = save_raster(
+        save_raster(
             final_dem, final_gt, prepared.crs_wkt, data_dir, "dem", overwrite=True
         )
         output_members = {"dem": "data/dem.tif"}
