@@ -614,6 +614,9 @@ class LandscapeExplorerDialog(QDialog):
         # and restoring to it then leaves the window full-screen sized.
         self._lastNormalGeometry = None
         self._restoringFromScreenState = False
+        # Set while restore_state puts the area mode back (see
+        # _extent_mode_chosen).
+        self._restoringAreaMode = False
         self._finishingWindowInteraction = False
         self._previewFrozenForWindowChange = False
         self._previewResizeTimer = QTimer(self)
@@ -704,6 +707,8 @@ class LandscapeExplorerDialog(QDialog):
         self.previewCanvas.extentsChanged.connect(self._queue_outline_for_view)
         self.polygonAreaRadio.toggled.connect(self._area_mode_changed)
         self.mapExtentAreaRadio.toggled.connect(self._area_mode_changed)
+        # After _area_mode_changed, which makes the catchment check available.
+        self.mapExtentAreaRadio.toggled.connect(self._extent_mode_chosen)
         # Only a user switch clears the selection (not restoring a state).
         self.mapExtentAreaRadio.clicked.connect(self._clear_area_selection_for_extent)
         self.watershedCheck.toggled.connect(self._watershed_toggled)
@@ -2571,6 +2576,11 @@ class LandscapeExplorerDialog(QDialog):
 
         kind = event.type()
         canvas = self.previewCanvas
+        if self.mapExtentAreaRadio.isChecked():
+            # With the preview extent the subject is framed freely in the
+            # 3/5 guide; the snap is for the polygon's balance on the sheet.
+            self._snapMarker.hide()
+            return False
         if kind == QEvent.Type.MouseMove:
             if event.buttons() or canvas.mapTool() is not self.previewPanTool:
                 self._snapMarker.hide()
@@ -4306,6 +4316,9 @@ class LandscapeExplorerDialog(QDialog):
     def _area_mode_changed(self, *args):
         del args
         use_polygon = self.polygonAreaRadio.isChecked()
+        if not use_polygon:
+            # No centre snap with the preview extent (_centre_snap_event).
+            self._snapMarker.hide()
         self.aoiLayerCombo.setEnabled(use_polygon)
         self.selectedOnlyCheck.setEnabled(use_polygon)
         self._update_watershed_option()
@@ -4314,6 +4327,17 @@ class LandscapeExplorerDialog(QDialog):
             self._activate_map_navigation()
         self._update_preview_selection_controls()
         self._update_preview_layers()
+
+    def _extent_mode_chosen(self, checked):
+        """Switching to the preview extent turns the catchment map on.
+
+        Catchments are offered only with the preview extent, so choosing it
+        is taken as wanting them; the check can still be cleared. Not when a
+        saved window state is put back (that keeps its own choice).
+        """
+
+        if checked and not self._restoringAreaMode and self.watershedCheck.isEnabled():
+            self.watershedCheck.setChecked(True)
 
     def _clear_area_selection_for_extent(self, *args):
         """Switching to the preview extent: keep the layer, drop its selection."""
@@ -5533,9 +5557,13 @@ class LandscapeExplorerDialog(QDialog):
         self.watershedCheck.setChecked(outputs.get("watershed", False))
         self.watershedCheck.blockSignals(False)
         self.selectedOnlyCheck.setChecked(state.get("selected_only", True))
-        self.mapExtentAreaRadio.setChecked(
-            state.get("area_mode", "polygon") == "map_extent"
-        )
+        self._restoringAreaMode = True
+        try:
+            self.mapExtentAreaRadio.setChecked(
+                state.get("area_mode", "polygon") == "map_extent"
+            )
+        finally:
+            self._restoringAreaMode = False
 
         project = QgsProject.instance()
         aoi = project.mapLayer(state.get("aoi_layer_id", ""))

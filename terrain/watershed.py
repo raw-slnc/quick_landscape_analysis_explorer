@@ -34,8 +34,9 @@ CATCHMENT_ENGINE = "auto"
 # Catchments are computed on this grid (m) ...
 CELL_SIZE_M = 5.0
 # ... and the smallest catchment is this large (ha). Morizon Next uses 500
-# cells, which is 5 ha on a 10 m DEM.
-MIN_AREA_HA = 5.0
+# cells, which is 5 ha on a 10 m DEM; 2 ha here, to read the terrain by
+# slopes and the larger hollows (5 ha was too coarse for that).
+MIN_AREA_HA = 2.0
 # r.watershed settings shared with Morizon Next.
 CONVERGENCE = 5
 MEMORY_MB = 300

@@ -128,8 +128,9 @@ right of the window opens its overview page.
   - CS Map (the logic of Forestry Operations Lite).
   - Contours: every 10 m, thicker every 20 m and 100 m, from a DEM averaged
     to 5 m and smoothed.
-  - Catchment map (map-extent area only; off by default): catchments by
-    valley, smallest 5 ha, computed by this plugin with GRASS r.watershed.
+  - Catchment map (map-extent area only; turned on when the preview map
+    extent is chosen as the area, and can be turned off): catchments by
+    valley, smallest 2 ha, computed by this plugin with GRASS r.watershed.
     Only the tool and its settings (MFD, convergence 5) are the same as in
     the original MORIZON and Morizon Next, which use them for zone
     statistics; there the smallest catchment is a number of cells (500, or
