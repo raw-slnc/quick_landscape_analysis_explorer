@@ -129,8 +129,12 @@ right of the window opens its overview page.
   - Contours: every 10 m, thicker every 20 m and 100 m, from a DEM averaged
     to 5 m and smoothed.
   - Catchment map (map-extent area only; off by default): catchments by
-    valley, smallest 5 ha, with GRASS r.watershed (MFD, as in the original
-    MORIZON and Morizon Next). Where QGIS has no GRASS (for example the
+    valley, smallest 5 ha, computed by this plugin with GRASS r.watershed.
+    Only the tool and its settings (MFD, convergence 5) are the same as in
+    the original MORIZON and Morizon Next, which use them for zone
+    statistics; there the smallest catchment is a number of cells (500, or
+    5 ha on a 10 m DEM), here it is an area on a 5 m grid, whatever the
+    DEM's resolution. Where QGIS has no GRASS (for example the
     macOS disk image), or GRASS is listed but does not run, the plugin
     computes them itself with numpy, after the
     rules of r.watershed: on two test areas in Germany the catchments in
@@ -247,7 +251,8 @@ Copyright (C) 2026 Hideharu Masai
   the actual site. Check them in the field.
 - The plugin is provided without warranty; the author takes no
   responsibility for any result of its use.
-- The slope colour classes and the catchment settings (GRASS r.watershed)
-  follow the original MORIZON (もりぞん), the forest zoning support tool of
-  the Forestry Agency of Japan (Copyright (C) 2021 MIERUNE Inc.), and Morizon
-  Next. This plugin is not made or endorsed by their authors.
+- The slope colour classes and the r.watershed settings for catchments (MFD,
+  convergence 5) are taken from the original MORIZON (もりぞん), the forest
+  zoning support tool of the Forestry Agency of Japan (Copyright (C) 2021
+  MIERUNE Inc.), and Morizon Next; no code is taken from them for the
+  catchments. This plugin is not made or endorsed by their authors.
