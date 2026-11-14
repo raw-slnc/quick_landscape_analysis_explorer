@@ -32,6 +32,9 @@ right of the window opens its overview page.
 - An independent window: it can be minimized, reached with Alt+Tab, or put
   behind QGIS.
 - English user interface with a Japanese switch stored in QGIS settings.
+- The plugin's windows use a fixed 9 pt font, whatever font size is set in
+  QGIS, so their layout keeps its shape; the operating system's display
+  scaling still applies. Print layouts are not affected.
 - At the top, as "country - region: latitude, longitude": the country and
   region of the chosen DEM source (for a local DEM or the global source, the
   country at the preview centre from the world map in QGIS), and the preview
@@ -39,6 +42,13 @@ right of the window opens its overview page.
 - The left preview is an A-series sheet, portrait or landscape. Its first view
   follows the QGIS main map; it can then be panned and zoomed on its own, and
   a button copies the main map's centre, CRS and scale again.
+- Zooming out of the preview stops where the whole earth (the Web Mercator
+  world in the preview's CRS) fills the sheet's width or height; at that
+  limit the view is held at the world's centre and further zooming out is
+  ignored.
+- Centre snap: within 45 px of the preview's centre a red cross follows the
+  mouse, and within 15 px it snaps to the centre, where the mouse wheel then
+  zooms about the centre, so the sheet's centre and guides keep their place.
 - Below the preview: the base map and an overlay, chosen from the project's
   layers and shown with their QGIS styles.
 
@@ -83,6 +93,34 @@ right of the window opens its overview page.
   (https://www.geospatial.jp/ckan/dataset/nagano-dem). They hold only which
   tile is in which package or sheet, used to pick the tiles to download; the
   DEM data itself is not bundled.
+
+  Choosing "Local DEM file" opens the file chooser at once. The "…" button
+  chooses another file, and the button at its right fits the preview to the
+  local DEM again.
+- Local DEM without a position (a reference feature, checked with only a few
+  real drawings): a CAD drawing (DXF, and DWG where the GDAL of this QGIS
+  can read it; otherwise save it as DXF), or a raster without
+  georeferencing or without a CRS. Nothing is placed by hand: the file's
+  coordinates are taken as values of the coordinate system the user picks.
+  - A window opens when the file is chosen. In it: the coordinate system
+    (the project's by default), "Swap X and Y" (survey drawings
+    with X north and Y east), the unit of the coordinates and heights (m,
+    cm or mm), and, when a drawing has more than one layer with heights,
+    the layers to make the DEM from. The conversion runs in the background
+    with progress and can be stopped.
+  - A drawing is gridded by linear interpolation in triangles. The cell
+    comes from the data: half the typical distance between neighbouring
+    lines and points, rounded down to a 1-2-5 step.
+  - The DEM is compared with a downloaded DEM: GSI DEM5A (DEM10B where there
+    is no 5 m) in Japan, AWS Terrain Tiles elsewhere. The Status box shows
+    what it was compared with, the agreement, the height ratio and the
+    height datum difference, and what to check when the agreement is low
+    (the zone of the coordinate system, local site coordinates, the unit,
+    swapped X and Y, the old Tokyo datum). A DEM that does not land on the
+    earth is not shown and cannot be analysed.
+  - The converted DEM is written to
+    `<project>/quick_landscape_analysis/qlae_edit_dem/` as a temporary file.
+    The analysis puts it into its ZIP and then removes it from that folder.
 - Outputs:
   - Hillshade.
   - Slope in degrees, in 5° classes from 20° to 45° (the slope colour classes
@@ -159,20 +197,22 @@ one may slow down earlier.
 - Image size: when one exported image goes over about 2 GB (4 bytes per
   pixel), the notice is stronger, as a PC without enough memory may fail to
   export it; it can still be exported as it is.
+- Local DEM without a position: a raster is taken up to 60 million cells;
+  a drawing's grid has 200 to 4,000 cells on its long side, and drawings
+  with more than 3 million points are thinned. The comparison with a
+  downloaded DEM is skipped when it would need more than 100 tiles.
 
 ## Code layout
 
 - `dialog.py`, `management_panel.py`: the window and analysis management.
+- `conversion_dialog.py`, `terrain/local_convert.py`: the window and the
+  conversion for a local DEM without a position.
+- `ui_fonts.py`: the fixed font of the plugin's windows.
 - `analyses/terrain.py`: the terrain analysis job (runs in a worker thread).
 - `terrain/`: DEM sources and loaders, terrain derivatives, contours,
   catchments and styles.
 - `core/packages.py`: the analysis ZIP packages.
 - `core/session.py`: the plugin's analysis layers in the project.
-
-## Next Japan routes
-
-Later stages can add national forest-resource analysis without changing the
-polygon-or-map-extent area contract or the portable package format.
 
 ---
 

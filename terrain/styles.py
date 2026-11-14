@@ -65,9 +65,10 @@ def write_catchment_qml(path):
 
     Catchment boundaries run along ridges, so they are kept apart from water
     (blue), the dark brown contours and the slope colours: purple, dashed
-    (3 mm dash, 1 mm gap), 0.3 mm wide, a little wider than the 100 m
-    contours. A faint white line underneath keeps them readable on dark
-    hillshade or CS-map areas. Sizes are in mm, so they follow the paper.
+    (3 mm dash, 1 mm gap), 0.4 mm wide, wider than the 100 m contours. A
+    white line underneath (opaque for whole catchments) keeps them readable
+    on dark hillshade or CS-map areas. Sizes are in mm, so they follow the
+    paper.
 
     Each boundary line is drawn once, from the lines a catchment keeps in
     "edges_wkt" (see terrain/watershed.py): drawing every polygon outline
@@ -87,9 +88,9 @@ def write_catchment_qml(path):
     )
     from qgis.PyQt.QtXml import QDomDocument
 
-    def symbol(width, alpha, halo_width):
+    def symbol(width, alpha, halo_width, halo_alpha):
         halo = QgsSimpleLineSymbolLayer.create({
-            "line_color": "255,255,255,{}".format(alpha // 2),
+            "line_color": "255,255,255,{}".format(halo_alpha),
             "line_width": halo_width,
             "line_width_unit": "MM",
             "capstyle": "round",
@@ -114,12 +115,13 @@ def write_catchment_qml(path):
         return QgsFillSymbol([generator])
 
     root = QgsRuleBasedRenderer.Rule(None)
-    for expression, label, width, alpha, halo_width in (
-        ('"complete" = 1', "whole", "0.3", 255, "0.7"),
-        ('"complete" = 0', "cut by the DEM edge", "0.18", 140, "0.5"),
+    # (rule, label, line width, line alpha, white width, white alpha)
+    for expression, label, width, alpha, halo_width, halo_alpha in (
+        ('"complete" = 1', "whole", "0.4", 255, "0.8", 255),
+        ('"complete" = 0', "cut by the DEM edge", "0.25", 140, "0.6", 70),
     ):
         root.appendChild(QgsRuleBasedRenderer.Rule(
-            symbol(width, alpha, halo_width), filterExp=expression, label=label
+            symbol(width, alpha, halo_width, halo_alpha), filterExp=expression, label=label
         ))
     layer = QgsVectorLayer(
         "MultiPolygon?field=basin_id:integer&field=complete:integer&field=edges_wkt:string",

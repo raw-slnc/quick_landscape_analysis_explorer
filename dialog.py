@@ -50,7 +50,6 @@ from qgis.PyQt.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -100,12 +99,16 @@ from qgis.gui import (
     QgsMapToolIdentify,
     QgsMapToolPan,
     QgsRubberBand,
+    QgsVertexMarker,
 )
 
+# bbox84 under its own name: methods here have local variables called bbox84.
+from .conversion_dialog import ConversionDialog, bbox84 as _bbox84
 from .analyses.terrain import WATERSHED_WIDEN, TerrainJobWorker, _a_series_envelope
 from .core import packages
 from .geopdf_task import GeoPdfTask
 from .i18n import ENGLISH, JAPANESE, is_japanese, set_language, tr
+from .ui_fonts import PLUGIN_SIZE_RULE, ask_int, ask_text, plugin_font, use_plugin_font
 from .layer_combo import (
     LayerTreeOrderComboBox,
     add_layer_choice,
@@ -117,7 +120,7 @@ from .core import session
 from .management_panel import AnalysisManagementPanel
 from .order_arrows import LayerOrderArrows
 from .plugin import PLUGIN_NAME
-from .terrain import dem_sources, remote_dem, watershed, world_country
+from .terrain import dem_sources, local_convert, remote_dem, watershed, world_country
 from .terrain.styles import SLOPE_COLORS
 
 
@@ -388,7 +391,7 @@ class DpiComboBox(QComboBox):
             self._fill([value], value)
             self.dpiChosen.emit(value)
             return
-        value, ok = QInputDialog.getInt(
+        value, ok = ask_int(
             self,
             tr("Resolution", "解像度"),
             tr("Resolution (dpi):", "解像度（dpi）："),
@@ -545,6 +548,9 @@ class LandscapeExplorerDialog(QDialog):
 
     def __init__(self, iface, parent=None):
         super().__init__(parent)
+        # One text size whatever QGIS's font size is, so the layout holds
+        # (the system's display scaling still applies): see ui_fonts.
+        use_plugin_font(self)
         self.iface = iface
         self.mainCanvas = iface.mapCanvas()
         self._previewAoiLayer = None
@@ -667,13 +673,15 @@ class LandscapeExplorerDialog(QDialog):
         self.columnsSplitter.setHandleWidth(main.spacing())
         self.previewPanel = self._build_preview_panel()
         self.controlPanel = self._build_control_panel()
-        self.controlPanel.setMinimumWidth(600)
+        self.controlPanel.setMinimumWidth(CONTROL_PANEL_MIN_WIDTH)
         self.columnsSplitter.addWidget(self.previewPanel)
         self.columnsSplitter.addWidget(self.controlPanel)
         self.columnsSplitter.setStretchFactor(0, 0)
         self.columnsSplitter.setStretchFactor(1, 1)
         self.columnsSplitter.handle(1).setEnabled(False)
         main.addWidget(self.columnsSplitter, 1)
+        # Sizes measured from the text (in the plugin's fixed text size).
+        self._apply_font_sizes()
 
         self.demSourceCombo.currentIndexChanged.connect(self._dem_source_changed)
         # Choosing a local DEM (by the user, not restored state) fits the
@@ -777,6 +785,14 @@ class LandscapeExplorerDialog(QDialog):
         self.previewFrame.canvasResized.connect(self._update_preview_status)
         self.previewCanvas.extentsChanged.connect(self._update_preview_status)
         self.previewCanvas.extentsChanged.connect(self._preview_extent_changed)
+        # Not wider than the whole earth (see _preview_zoom_out_limit), once
+        # the view has settled; whether the preview is at that limit.
+        self._previewAtLimit = False
+        self._zoomOutTimer = QTimer(self)
+        self._zoomOutTimer.setSingleShot(True)
+        self._zoomOutTimer.setInterval(0)
+        self._zoomOutTimer.timeout.connect(self._apply_zoom_out_limit)
+        self.previewCanvas.extentsChanged.connect(self._queue_zoom_out_limit)
         self.mainViewButton.clicked.connect(self._sync_preview_from_main)
         # Layer lists follow the project, once per burst of changes (adding
         # an analysis changes the layer tree many times in a row) and only
@@ -827,6 +843,15 @@ class LandscapeExplorerDialog(QDialog):
         self.previewCanvas.setMapTool(self.previewPanTool)
         preview_layout.addWidget(self.previewFrame, 1)
 
+        # The centre snap's red cross (as in Kozu XML Integrator: see
+        # _centre_snap_event).
+        self._snapMarker = QgsVertexMarker(self.previewCanvas)
+        self._snapMarker.setIconType(QgsVertexMarker.IconType.ICON_CROSS)
+        self._snapMarker.setColor(QColor(255, 0, 0, 255))
+        self._snapMarker.setIconSize(18)
+        self._snapMarker.setPenWidth(2)
+        self._snapMarker.hide()
+
         self.previewRubber = QgsRubberBand(self.previewCanvas, Qgis.GeometryType.Polygon)
         # Fill only: no outline, so many neighbouring polygons stay light to
         # draw and the map under them stays readable.
@@ -849,10 +874,9 @@ class LandscapeExplorerDialog(QDialog):
         status_layout.setSpacing(4)
         self.previewStatusLabel = QLabel(status_row)
         self.previewStatusLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.previewStatusLabel.setStyleSheet("color: palette(text); font-size: 9pt;")
+        self.previewStatusLabel.setStyleSheet("color: palette(text);")
         self.previewOrientationButton = QToolButton(status_row)
         self.previewOrientationButton.setAutoRaise(True)
-        self.previewOrientationButton.setFixedSize(30, 26)
         self.previewOrientationButton.clicked.connect(
             self._toggle_preview_orientation
         )
@@ -866,7 +890,6 @@ class LandscapeExplorerDialog(QDialog):
             QgsApplication.getThemeIcon("/mActionSetToCanvasExtent.svg")
         )
         self.mainViewButton.setAutoRaise(True)
-        self.mainViewButton.setFixedSize(26, 26)
         self.mainViewButton.setToolTip(
             tr(
                 "Get the centre, CRS and scale from the QGIS main map.",
@@ -900,7 +923,6 @@ class LandscapeExplorerDialog(QDialog):
             QgsApplication.getThemeIcon("/mActionViewExtentInCanvas.svg")
         )
         self.toMainViewButton.setAutoRaise(True)
-        self.toMainViewButton.setFixedSize(26, 26)
         self.toMainViewButton.setToolTip(
             tr(
                 "Show the preview's area in the QGIS main map.",
@@ -979,7 +1001,6 @@ class LandscapeExplorerDialog(QDialog):
             self.clearSelectionButton,
         ):
             button.setAutoRaise(True)
-            button.setFixedSize(26, 26)
             tools.addWidget(button)
 
         self.previewToolButtonGroup = QButtonGroup(panel)
@@ -1057,7 +1078,6 @@ class LandscapeExplorerDialog(QDialog):
         self.imageFormatButton.setIcon(QgsApplication.getThemeIcon("/mActionRefresh.svg"))
         # Its tooltip (with the current format's character) follows the format.
         self.imageFormatButton.clicked.connect(self._next_image_format)
-        self.imageFormatButton.setFixedHeight(self.exportImageButton.sizeHint().height())
         self._imageFormat = _stored_image_format()
         self._update_image_button()
         image_cell = QHBoxLayout()
@@ -1125,10 +1145,8 @@ class LandscapeExplorerDialog(QDialog):
         layout.addWidget(self.controlStack)
         # The preview layers follow the screen's own layer choices directly.
         layout.addLayout(self._build_preview_layer_area(panel))
-        # One label width for the optional-layer and preview-layer rows.
-        align_layer_choice_labels(
-            self.managementPanel.optionalLabels() + self._previewLayerLabels
-        )
+        # (One label width for the optional-layer and preview-layer rows:
+        # _apply_font_sizes.)
         # Shared status at the bottom: cleared on every screen switch so it
         # always describes the screen and data currently in use.
         layout.addWidget(self._build_result_box(), 1)
@@ -1173,7 +1191,8 @@ class LandscapeExplorerDialog(QDialog):
 
         self.baseMapBox = box
         area.addWidget(box)
-        area.addWidget(self._build_saved_analyses_box(parent))
+        self.savedAnalysesBox = self._build_saved_analyses_box(parent)
+        area.addWidget(self.savedAnalysesBox)
         return area
 
     def showEvent(self, event):
@@ -1423,6 +1442,7 @@ class LandscapeExplorerDialog(QDialog):
         except packages.PackageError:
             return
         box = QMessageBox(self)
+        use_plugin_font(box)
         box.setIcon(QMessageBox.Icon.Question)
         box.setWindowTitle(tr("Previous analysis", "前の解析"))
         box.setText(tr(
@@ -1775,6 +1795,7 @@ class LandscapeExplorerDialog(QDialog):
             return dpi
         limit = self._processing_limit_dpi()
         box = QMessageBox(self)
+        use_plugin_font(box)
         box.setIcon(QMessageBox.Icon.Critical if very_large else QMessageBox.Icon.Warning)
         box.setWindowTitle(title)
         box.setText(size_text.format(self._paper_name(), dpi, width_px, height_px))
@@ -2410,12 +2431,206 @@ class LandscapeExplorerDialog(QDialog):
             if final:
                 self._resizePreviewExtent = None
             return
+        if self._previewAtLimit:
+            # At the zoom-out limit the sheet's new shape has its own limit
+            # (portrait or landscape): drawn again there.
+            self._show_zoom_out_limit()
+            self._update_preview_status()
+            if final:
+                self._resizePreviewExtent = None
+            return
         self._sync_paper_magnification()
         self._set_preview_extent(extent)
         self.previewCanvas.refresh()
         self._update_preview_status()
         if final:
             self._resizePreviewExtent = None
+            # The width changed (orientation, window): so did the limit.
+            self._queue_zoom_out_limit()
+
+    def _preview_zoom_out_limit(self):
+        """(map units per pixel, centre) at which the whole earth fills the
+        preview, or None.
+
+        One limit for every layer: the whole earth as tile maps draw it (the
+        Web Mercator world) put into the preview's CRS. The preview stops
+        where its width or its height, whichever comes first, is filled (so
+        no blank band is left, in portrait or landscape), and at the limit
+        it stays on the earth's centre. A fixed earth width (the equator)
+        did not do: in a CRS such as a plane rectangular zone the world
+        comes out narrower, and the map sat small in the middle of the sheet.
+        """
+
+        canvas = self.previewCanvas
+        crs = canvas.mapSettings().destinationCrs()
+        viewport = canvas.viewport()
+        if not crs.isValid() or viewport.width() <= 0:
+            return None
+        try:
+            world = QgsCoordinateTransform(
+                QgsCoordinateReferenceSystem("EPSG:3857"),
+                crs,
+                QgsProject.instance().transformContext(),
+            ).transformBoundingBox(QgsRectangle(*WEB_MERCATOR_WORLD))
+        except QgsCsException:
+            return None
+        if world.isEmpty() or not world.isFinite() or viewport.height() <= 0:
+            return None
+        return (
+            min(world.width() / viewport.width(), world.height() / viewport.height()),
+            world.center(),
+        )
+
+    def _at_zoom_out_limit(self):
+        """Whether the preview shows the whole earth's width (held in place)."""
+
+        found = self._preview_zoom_out_limit()
+        viewport = self.previewCanvas.viewport()
+        if found is None or viewport.width() <= 0 or found[1] is None:
+            return False
+        return self.previewCanvas.extent().width() / viewport.width() >= found[0] * 0.999
+
+    def _queue_zoom_out_limit(self, *args):
+        del args
+        self._zoomOutTimer.start()
+
+    def _apply_zoom_out_limit(self):
+        """At or past the limit: the whole earth filling the sheet, held.
+
+        Zoomed out past the limit, the preview goes back to it; at the limit
+        it cannot be moved (see _preview_zoom_out_limit) and further
+        zooming out is not taken at all (eventFilter), so nothing is drawn
+        again for it.
+        """
+
+        if (
+            not self._previewInitialized
+            or self._pendingPreviewView is not None
+            or self._resizePreviewExtent is not None
+            or self._in_management()
+        ):
+            return
+        found = self._preview_zoom_out_limit()
+        canvas = self.previewCanvas
+        extent = canvas.extent()
+        viewport = canvas.viewport()
+        if found is None or extent.isEmpty() or viewport.width() <= 0:
+            self._previewAtLimit = False
+            return
+        limit, held = found
+        if extent.width() / viewport.width() < limit * 0.999:
+            self._previewAtLimit = False
+            return
+        if (
+            extent.width() / viewport.width() <= limit * 1.001
+            and abs(extent.center().x() - held.x()) <= limit
+            and abs(extent.center().y() - held.y()) <= limit
+        ):
+            self._previewAtLimit = True  # at the limit and in place
+            return
+        self._show_zoom_out_limit()
+
+    def _show_zoom_out_limit(self):
+        """The preview at the limit: the whole earth filling it, on its centre."""
+
+        found = self._preview_zoom_out_limit()
+        viewport = self.previewCanvas.viewport()
+        if found is None:
+            self._previewAtLimit = False
+            return
+        limit, centre = found
+        half_width = limit * viewport.width() / 2.0
+        half_height = limit * viewport.height() / 2.0
+        self._sync_paper_magnification()
+        self._set_preview_extent(QgsRectangle(
+            centre.x() - half_width, centre.y() - half_height,
+            centre.x() + half_width, centre.y() + half_height,
+        ))
+        self._previewAtLimit = True
+        self.previewCanvas.refresh()
+
+    def _near_preview_centre(self, position, reach=None):
+        """Whether a viewport position is within reach (default: the snap) of the centre."""
+
+        viewport = self.previewCanvas.viewport()
+        return math.hypot(
+            position.x() - viewport.width() / 2.0, position.y() - viewport.height() / 2.0
+        ) <= (PREVIEW_CENTRE_SNAP_PX if reach is None else reach)
+
+    def _centre_snap_event(self, event):
+        """The centre snap, as in Kozu XML Integrator.
+
+        A red cross appears at the mouse within PREVIEW_CENTRE_CROSS_PX of
+        the preview's centre and, within PREVIEW_CENTRE_SNAP_PX, jumps to the
+        centre and stays there; the wheel then zooms about the centre itself,
+        so the sheet's centre and guides keep their place. Elsewhere the wheel zooms
+        about the mouse as usual. Not while dragging or selecting polygons.
+
+        Returns True when the event was handled here.
+        """
+
+        kind = event.type()
+        canvas = self.previewCanvas
+        if kind == QEvent.Type.MouseMove:
+            if event.buttons() or canvas.mapTool() is not self.previewPanTool:
+                self._snapMarker.hide()
+                return False
+            position = event.position() if hasattr(event, "position") else event.pos()
+            self._place_snap_marker(position)
+            return False
+        if kind in (QEvent.Type.Leave, QEvent.Type.MouseButtonPress):
+            self._snapMarker.hide()
+            return False
+        if kind != QEvent.Type.Wheel:
+            return False
+        position = event.position() if hasattr(event, "position") else event.pos()
+        if not self._near_preview_centre(position):
+            return False
+        delta = event.angleDelta().y()
+        if not delta:
+            return True
+        # The zoom step as QGIS's own wheel zoom (QgsMapCanvas::wheelEvent).
+        settings = QgsSettings()
+        factor = settings.value("qgis/zoom_factor", 2.0, type=float)
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            factor = 1.0 + (factor - 1.0) / 20.0
+        factor = 1.0 + (factor - 1.0) / 120.0 * abs(delta)
+        zoom_in = delta > 0
+        if settings.value("qgis/reverse_wheel_zoom", False, type=bool):
+            zoom_in = not zoom_in
+        canvas.zoomByFactor(1.0 / factor if zoom_in else factor)
+        self._place_snap_marker(position)
+        return True
+
+    def _place_snap_marker(self, position):
+        """The red cross at the mouse near the centre, or at the centre when
+        within the snap; hidden farther away."""
+
+        canvas = self.previewCanvas
+        if not self._near_preview_centre(position, PREVIEW_CENTRE_CROSS_PX):
+            self._snapMarker.hide()
+            return
+        if self._near_preview_centre(position):
+            point = canvas.center()
+        else:
+            point = canvas.getCoordinateTransform().toMapCoordinates(
+                int(position.x()), int(position.y())
+            )
+        self._snapMarker.setCenter(point)
+        self._snapMarker.show()
+
+    def _zooms_out(self, event):
+        """Whether a wheel or key event would zoom the preview out."""
+
+        kind = event.type()
+        if kind == QEvent.Type.Wheel:
+            delta = event.angleDelta().y()
+            if QgsSettings().value("qgis/reverse_wheel_zoom", False, type=bool):
+                delta = -delta
+            return delta < 0
+        if kind == QEvent.Type.KeyPress:
+            return event.key() in (Qt.Key.Key_Minus, Qt.Key.Key_PageDown)
+        return False
 
     def _preview_extent_changed(self):
         """Remember user navigation, but not canvas-resize corrections."""
@@ -2550,7 +2765,10 @@ class LandscapeExplorerDialog(QDialog):
         )
         self.demSourceCombo.setMinimumContentsLength(14)
         model = QStandardItemModel(self.demSourceCombo)
-        header_font = self.demSourceCombo.font()
+        # The plugin's text size, bold. Not the combo's font: the section is
+        # built before it is in the window, so that would be QGIS's size,
+        # written into the items for good.
+        header_font = plugin_font()
         header_font.setBold(True)
         for group_label, region, items in dem_sources.GROUPS:
             header = QStandardItem(tr(*group_label))
@@ -2583,8 +2801,21 @@ class LandscapeExplorerDialog(QDialog):
         self.localDemBrowseButton.setToolTip(
             tr("Choose a local DEM file.", "ローカルDEMファイルを選びます。")
         )
+        # Right of "…": fit the preview to the local DEM again (its first
+        # view), e.g. after zooming far out.
+        self.localDemFitButton = QToolButton(self.localDemRow)
+        self.localDemFitButton.setIcon(QgsApplication.getThemeIcon("/mActionRefresh.svg"))
+        self.localDemFitButton.setToolTip(
+            tr(
+                "Fit the preview to the local DEM again.",
+                "プレビューをローカルDEMの範囲に合わせ直します。",
+            )
+        )
+        self.localDemFitButton.setEnabled(False)
+        self.localDemFitButton.clicked.connect(self._refit_preview_to_local_dem)
         local_layout.addWidget(self.localDemEdit, 1)
         local_layout.addWidget(self.localDemBrowseButton)
+        local_layout.addWidget(self.localDemFitButton)
         self.localDemLabel = QLabel(tr("File", "ファイル"), box)
         form.addRow(self.localDemLabel, self.localDemRow)
         # Keep the row's space while hidden so the section does not change
@@ -2599,21 +2830,8 @@ class LandscapeExplorerDialog(QDialog):
         self.demSourceNote.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
         )
-        note_font = self.demSourceNote.font()
-        note_font.setPointSizeF(9.0)
-        self.demSourceNote.setFont(note_font)
-        # One character of left margin for every line, wrapped lines included.
-        self.demSourceNote.setIndent(
-            self.demSourceNote.fontMetrics().horizontalAdvance(tr("M", "あ"))
-        )
-        # Always two lines high, with or without a note, so the section keeps
-        # its height whichever source is chosen. The label measures two lines
-        # itself: line spacing alone can be less than a line's height (some
-        # fonts), and a wrapping label adds a little room, so a height from
-        # the line spacing cut off the second line.
-        self.demSourceNote.setText("M\nM")
-        self.demSourceNote.setFixedHeight(self.demSourceNote.heightForWidth(1000))
-        self.demSourceNote.clear()
+        # Small text, one character of indent and two lines of height: set
+        # from the font in _apply_font_sizes.
         form.addRow(self.demSourceNote)
 
         self._demAvailabilityTimer = QTimer(self)
@@ -2789,12 +3007,13 @@ class LandscapeExplorerDialog(QDialog):
         )
         self.runButton.setStyleSheet(
             "QPushButton#qlaeRunButton {"
-            "background-color: %s; color: white; font-weight: bold;"
+            "background-color: %s; color: white; font-weight: bold; %s"
             "border: 1px solid %s; border-radius: 3px; padding: 4px 12px;}"
             "QPushButton#qlaeRunButton:hover {background-color: %s;}"
             "QPushButton#qlaeRunButton:pressed {background-color: %s;}"
             "QPushButton#qlaeRunButton:disabled {background-color: #9aa5b1;"
-            "border-color: #9aa5b1; color: white;}" % (base, pressed, hover, pressed)
+            "border-color: #9aa5b1; color: white;}"
+            % (base, PLUGIN_SIZE_RULE, pressed, hover, pressed)
         )
 
     def _build_analysis_box(self):
@@ -2832,10 +3051,12 @@ class LandscapeExplorerDialog(QDialog):
         layout.addWidget(self.watershedCheck)
         # Empty rows under the checks keep room for the DEM and the base map
         # on the right.
+        # (Their height follows the check box: _apply_font_sizes.)
+        self._watershedSpacerRows = []
         for _row in range(2):
             spacer_row = QWidget(box)
-            spacer_row.setFixedHeight(self.watershedCheck.sizeHint().height())
             layout.addWidget(spacer_row)
+            self._watershedSpacerRows.append(spacer_row)
         layout.addStretch(1)
         # Checks are in run order; the layers come out in drawing order.
         self.layerOrderArrows = LayerOrderArrows(
@@ -2911,7 +3132,6 @@ class LandscapeExplorerDialog(QDialog):
         self.analysisNameNote = QLabel(_timestamp_note_text(), box)
         self.analysisNameNote.setWordWrap(True)
         self.analysisNameNote.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self.analysisNameNote.setStyleSheet("font-size: 9pt;")
         layout.addWidget(self.analysisNameNote)
         return box
 
@@ -2940,7 +3160,7 @@ class LandscapeExplorerDialog(QDialog):
         note = self.analysisNameNote
         note.setText(_name_taken_short_text() if taken else _timestamp_note_text())
         note.setStyleSheet(
-            "font-size: 9pt; color: #c0392b; font-weight: bold;" if taken else "font-size: 9pt;"
+            "color: #c0392b; font-weight: bold; " + PLUGIN_SIZE_RULE if taken else ""
         )
 
     def _build_saved_analyses_box(self, parent):
@@ -2970,9 +3190,6 @@ class LandscapeExplorerDialog(QDialog):
             )
         )
         self.openAnalysisFolderButton.clicked.connect(self._open_analysis_folder)
-        combo_height = self.savedAnalysisCombo.sizeHint().height()
-        self.loadAnalysisButton.setFixedHeight(combo_height)
-        self.openAnalysisFolderButton.setFixedHeight(combo_height)
         saved_layout.addWidget(self.savedAnalysisCombo, 1)
         saved_layout.addWidget(self.loadAnalysisButton)
         saved_layout.addWidget(self.openAnalysisFolderButton)
@@ -2982,7 +3199,6 @@ class LandscapeExplorerDialog(QDialog):
             self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
         )
         self.refreshAnalysesButton.setAutoRaise(True)
-        self.refreshAnalysesButton.setFixedSize(combo_height, combo_height)
         self.refreshAnalysesButton.setToolTip(
             tr(
                 "Rebuild the list from the analysis folder.",
@@ -3035,11 +3251,71 @@ class LandscapeExplorerDialog(QDialog):
         row.addWidget(self.closeButton)
         return row
 
+    def _apply_font_sizes(self):
+        """Sizes measured from the text, once the window is built.
+
+        The text has the plugin's fixed size (ui_fonts); measured here: the
+        buttons beside combos, the DEM note's two lines and the room kept
+        under the analysis checks.
+        """
+
+        # The DEM note: one character of indent, always two lines
+        # high so the section keeps its height whichever source is chosen.
+        # The label measures two lines itself: line spacing alone can be less
+        # than a line's height (some fonts), and a wrapping label adds a
+        # little room, so a height from the line spacing cut off the second
+        # line.
+        note = self.demSourceNote
+        # A left margin, not setIndent: a label's indent goes to every edge
+        # it is aligned to, so with AlignTop it also put a character of space
+        # above the text (12 px more than the two lines).
+        note.setContentsMargins(note.fontMetrics().horizontalAdvance(tr("M", "あ")), 0, 0, 0)
+        text = note.text()
+        note.setText("M\nM")
+        note.setFixedHeight(note.heightForWidth(1000))
+        note.setText(text)
+
+        for row in self._watershedSpacerRows:
+            row.setFixedHeight(self.watershedCheck.sizeHint().height())
+
+        # Buttons as high as the combos beside them.
+        combo_height = self.savedAnalysisCombo.sizeHint().height()
+        self.loadAnalysisButton.setFixedHeight(combo_height)
+        self.openAnalysisFolderButton.setFixedHeight(combo_height)
+        self.refreshAnalysesButton.setFixedSize(combo_height, combo_height)
+        self.imageFormatButton.setFixedHeight(self.exportImageButton.sizeHint().height())
+        for button, _in_use in self._visibility_buttons():
+            button.setFixedHeight(button._combo.sizeHint().height())
+
+        # The preview's status row: square buttons as high as the paper
+        # combo; the tool panel's buttons fit inside its frame.
+        side = self.paperSizeCombo.sizeHint().height()
+        for button in (self.mainViewButton, self.toMainViewButton):
+            button.setFixedSize(side, side)
+        orientation = self.previewOrientationButton
+        orientation.setFixedSize(
+            max(side + 4, orientation.fontMetrics().horizontalAdvance("A↕") + 12), side
+        )
+        inner = max(16, side - 4)
+        for button in (
+            self.mapNavigationButton,
+            self.polygonSelectButton,
+            self.clearSelectionButton,
+        ):
+            button.setFixedSize(inner, inner)
+        self.previewToolPanel.adjustSize()
+
+        # Labels of the layer-choice rows: one width, the longest.
+        align_layer_choice_labels(
+            self.managementPanel.optionalLabels() + self._previewLayerLabels
+        )
+
     def _open_avid_maps_page(self, *args):
         """Say what Avid Maps Extra is, then open its overview page if wanted."""
 
         del args
         box = QMessageBox(self)
+        use_plugin_font(box)
         box.setIcon(QMessageBox.Icon.Information)
         box.setWindowTitle("Avid Maps Extra")
         box.setText(tr(
@@ -3278,6 +3554,32 @@ class LandscapeExplorerDialog(QDialog):
         ):
             self._prepare_preview_show()
         if (
+            event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove)
+            and watched is self.previewCanvas.viewport()
+            and not self._in_management()
+            and event.buttons() & (Qt.MouseButton.LeftButton | Qt.MouseButton.MiddleButton)
+            and self.previewCanvas.mapTool() is self.previewPanTool
+            and self._at_zoom_out_limit()
+        ):
+            # At the zoom-out limit the earth is held in place: no dragging.
+            return True
+        if (
+            getattr(self, "_previewAtLimit", False)
+            and watched in (self.previewCanvas, self.previewCanvas.viewport())
+            and not self._in_management()
+            and self._zooms_out(event)
+            and self._at_zoom_out_limit()
+        ):
+            # At the zoom-out limit: zooming further out is not taken, so
+            # the preview is not drawn again for nothing.
+            return True
+        if (
+            watched is self.previewCanvas.viewport()
+            and not self._in_management()
+            and self._centre_snap_event(event)
+        ):
+            return True
+        if (
             self._in_management()
             and event.type() in _PREVIEW_NAVIGATION_EVENTS
             and not (
@@ -3402,6 +3704,8 @@ class LandscapeExplorerDialog(QDialog):
         ):
             widget.setVisible(not managing)
         self.toMainViewButton.setVisible(managing)
+        if managing:
+            self._snapMarker.hide()
         self._update_local_dem_footprint()
         if managing:
             self.previewFrame.setAnalysisGuideVisible(False)
@@ -3537,11 +3841,10 @@ class LandscapeExplorerDialog(QDialog):
                 tr("The analysis results could not be loaded.", "解析結果を読み込めません。")
             )
             return
-        text, accepted = QInputDialog.getText(
+        text, accepted = ask_text(
             self,
             tr("Rename analysis", "解析名を変更"),
             tr("New analysis name:", "新しい解析名："),
-            QLineEdit.EchoMode.Normal,
             old_name,
         )
         if not accepted:
@@ -4200,6 +4503,7 @@ class LandscapeExplorerDialog(QDialog):
         # The standard message box: icon, text, informative text, and the
         # "don't show again" check box at the left of the button row.
         box = QMessageBox(self)
+        use_plugin_font(box)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle(tr("AWS Terrarium", "AWS Terrarium"))
         box.setText(tr(
@@ -4238,6 +4542,7 @@ class LandscapeExplorerDialog(QDialog):
         if not names or QgsSettings().value(WMS_EXPORT_NOTICE_HIDDEN_KEY, False, type=bool):
             return True
         box = QMessageBox(self)
+        use_plugin_font(box)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle(tr("WMS layers in the preview", "プレビューにWMSレイヤーがあります"))
         box.setText(tr(
@@ -4276,18 +4581,21 @@ class LandscapeExplorerDialog(QDialog):
             self._set_dem_source(previous or None)
             return
         if self._dem_source_key() == "local":
-            # The DEM section has no room for this under the layer combo, so
-            # it goes to the shared status. The plugin cannot tell elevation
+            # Local chosen (also again): the file window opens at once (after the combo's
+            # list has closed). The DEM section has no room for the note, so
+            # it goes to the shared status: the plugin cannot tell elevation
             # from other single-band rasters.
             self.resultEdit.setPlainText(
                 tr(
                     "Local was chosen as the DEM source.\nChoose an elevation "
-                    "raster file with \u2026; other single-band rasters such as slope "
-                    "cannot be told apart.",
-                    "データの取得元にローカルが選択されました。\n「…」から標高のラスタの"
-                    "ファイルを選んでください。傾斜などの1バンドのラスタは見分けられません。",
+                    "raster file; other single-band rasters such as slope cannot be "
+                    "told apart. \u2026 chooses the file again.",
+                    "データの取得元にローカルが選択されました。\n標高のラスタのファイルを"
+                    "選んでください。傾斜などの1バンドのラスタは見分けられません。"
+                    "「…」で選び直せます。",
                 )
             )
+            QTimer.singleShot(0, self._choose_local_dem_file)
         self._fit_preview_to_local_dem()
 
     def _choose_local_dem_file(self, *args):
@@ -4302,14 +4610,23 @@ class LandscapeExplorerDialog(QDialog):
             self,
             tr("Choose a local DEM file", "ローカルDEMファイルを選択"),
             start,
-            tr("Raster files", "ラスタファイル")
+            tr("DEM files", "DEMファイル")
+            + " (*.tif *.tiff *.img *.asc *.vrt *.bil *.dem *.dxf *.dwg);;"
+            + tr("Raster files", "ラスタファイル")
             + " (*.tif *.tiff *.img *.asc *.vrt *.bil *.dem);;"
+            + tr("CAD files", "CADファイル")
+            + " (*.dxf *.dwg);;"
             + tr("All files", "すべてのファイル")
             + " (*)",
         )
         if not path:
             return
         settings.setValue("qlae/local_dem_dir", os.path.dirname(path))
+        if local_convert.is_cad(path) or local_convert.raster_without_position(path):
+            # No place on the earth: converted with a coordinate system the
+            # user picks, then compared with a network DEM.
+            self._start_conversion(path)
+            return
         info, reason = _inspect_local_dem(path)
         if info is None:
             # Keep the previous file; say why this one was not taken.
@@ -4321,19 +4638,25 @@ class LandscapeExplorerDialog(QDialog):
             )
             return
         self._set_local_dem(path, info)
-        self.resultEdit.setPlainText(
-            tr(
-                "Local DEM file loaded: {}\nCheck that it is an elevation raster; "
-                "other single-band rasters such as slope cannot be told apart.",
-                "ローカルDEMファイルを読み込みました：{}\n標高のラスタか確認してください。"
-                "傾斜などの1バンドのラスタは見分けられません。",
-            ).format(os.path.basename(path))
-        )
-        self._fit_preview_to_local_dem()
+        text = tr(
+            "Local DEM file loaded: {}\nCheck that it is an elevation raster; "
+            "other single-band rasters such as slope cannot be told apart.",
+            "ローカルDEMファイルを読み込みました：{}\n標高のラスタか確認してください。"
+            "傾斜などの1バンドのラスタは見分けられません。",
+        ).format(os.path.basename(path))
+        if not self._fit_preview_to_local_dem():
+            text += "\n\n" + _off_earth_text(converted=False)
+        self.resultEdit.setPlainText(text)
+
+    def _refit_preview_to_local_dem(self, *args):
+        del args
+        if not self._fit_preview_to_local_dem():
+            self.resultEdit.setPlainText(_off_earth_text(converted=False))
 
     def _set_local_dem(self, path, info=None):
         self._localDemPath = path or ""
         self._localDemInfo = info
+        self.localDemFitButton.setEnabled(bool(info))
         self.localDemEdit.setText(os.path.basename(path) if path else "")
         self.localDemEdit.setToolTip(path or "")
         self._update_local_dem_footprint()
@@ -4360,16 +4683,21 @@ class LandscapeExplorerDialog(QDialog):
         """Fit the area of the local DEM that holds values, centred.
 
         The whole valid area fits inside the A-series preview; the limiting
-        side (width or height) touches the frame.
+        side (width or height) touches the frame. A DEM whose coordinates are
+        not a place on the earth in its CRS (mm read as metres, a wrong
+        coordinate system) is not fitted: the preview would go off the earth,
+        where tile maps become very heavy. Returns False then, else True.
         """
 
         del args
         if self._in_management() or self._dem_source_key() != "local":
-            return
+            return True
         info = getattr(self, "_localDemInfo", None)
         if not info:
-            return
+            return True
         source_crs = QgsCoordinateReferenceSystem.fromWkt(info["crs_wkt"])
+        if _bbox84(source_crs, info["valid_extent"]) is None:
+            return False
         extent = QgsRectangle(*info["valid_extent"])
         destination_crs = self.previewCanvas.mapSettings().destinationCrs()
         if (
@@ -4382,14 +4710,93 @@ class LandscapeExplorerDialog(QDialog):
                     source_crs, destination_crs, QgsProject.instance().transformContext()
                 ).transformBoundingBox(extent)
             except QgsCsException:
-                return
+                return False
         if extent.isEmpty():
-            return
+            return True
         self._sync_paper_magnification()
         self._set_preview_extent(extent)
         self.previewCanvas.setCenter(extent.center())
         self._stablePreviewExtent = QgsRectangle(self.previewCanvas.extent())
         self.previewCanvas.refresh()
+        return True
+
+    # -- DEM without a position: converted with a chosen coordinate system ---
+    #
+    # A CAD drawing or a raster without a position is read, converted and
+    # compared with a network DEM in its own window (ConversionDialog: the
+    # coordinate system, how to read the coordinates, the CAD layers, then
+    # the progress with a Stop button). The converted DEM (qlae_edit_dem/)
+    # becomes the local DEM and the result is shown in the Status box.
+
+    def _start_conversion(self, path):
+        if self._terrainWorker is not None:
+            self.resultEdit.setPlainText(
+                tr("Wait until the analysis has finished.", "解析が終わるまでお待ちください。")
+            )
+            return
+        project_directory = QgsProject.instance().absolutePath()
+        if not project_directory:
+            self.resultEdit.setPlainText(
+                tr(
+                    "A converted DEM is saved beside the QGIS project. Save the project first.",
+                    "変換したDEMはQGISプロジェクトの横に保存します。"
+                    "先にQGISプロジェクトを保存してください。",
+                )
+            )
+            return
+        crs = QgsProject.instance().crs()
+        if not crs.isValid():
+            crs = self.previewCanvas.mapSettings().destinationCrs()
+        target = local_convert.edit_path(project_directory, packages.ROOT_FOLDER, path)
+        dialog = ConversionDialog(path, crs, target, self)
+        try:
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+            result = dialog.conversionResult()
+        finally:
+            dialog.deleteLater()
+        if self._localDemPath and not os.path.isfile(self._localDemPath):
+            # The same file converted again and stopped: its earlier DEM is gone.
+            self._set_local_dem("", None)
+        if not accepted or result is None:
+            self.resultEdit.setPlainText(
+                tr(
+                    "Conversion cancelled. The local DEM was not changed.",
+                    "変換を取り消しました。ローカルDEMは変えていません。",
+                )
+            )
+            return
+        self._show_converted(result["path"], result["record"])
+
+    def _show_converted(self, target, record):
+        """Use the converted DEM and show what came of it in the Status box."""
+
+        info, reason = _inspect_local_dem(target)
+        if info is None:
+            self.resultEdit.setPlainText(
+                tr("The converted DEM cannot be used: {}", "変換したDEMを使えません：{}").format(
+                    reason
+                )
+            )
+            return
+        self._set_local_dem(target, info)
+        # From the project folder's name on: the rest of the path is the
+        # user's own and long.
+        project_directory = QgsProject.instance().absolutePath()
+        shown = os.path.relpath(target, os.path.dirname(project_directory))
+        text = tr("Converted to a DEM: {}", "DEMに変換しました：{}").format(shown)
+        if not self._fit_preview_to_local_dem():
+            # Coordinates read in a coordinate system that does not hold
+            # them (mm read as metres, another system): no place to show.
+            text += "\n\n" + _off_earth_text()
+        parts = [text]
+        if (record.get("comparison") or {}).get("skipped") != "no_place":
+            # Off the earth the text above says it all; else the comparison.
+            parts.extend(_conversion_texts(record))
+        parts.append(tr(
+            "* This file is temporary. It is put into the ZIP when an analysis is run.",
+            "※このファイルは一時ファイルです。解析実行後はZIPに同梱します。",
+        ))
+        self.resultEdit.setPlainText("\n\n".join(parts))
 
     def _dem_source_available(self):
         index = self.demSourceCombo.currentIndex()
@@ -4418,6 +4825,23 @@ class LandscapeExplorerDialog(QDialog):
             return
         self._overwritePackagePath = None
         specification["overwrite"] = False
+        if _bbox84(
+            QgsCoordinateReferenceSystem.fromWkt(specification["aoi_crs_wkt"]),
+            specification["aoi_bbox"],
+        ) is None:
+            self.resultEdit.setPlainText(
+                tr(
+                    "The analysis area is not a place on the earth in the preview's "
+                    "coordinate system. Bring the preview back to the map (QGIS main "
+                    "map button). For a converted DEM, check its coordinate system "
+                    "and plane unit and convert it again.",
+                    "解析範囲が、プレビューの座標系で地球上の位置になっていません。"
+                    "プレビューを地図のある場所に戻してください（QGISメイン地図から取得"
+                    "するボタン）。変換したDEMなら、座標系と平面の単位を確かめて、"
+                    "もう一度変換してください。",
+                )
+            )
+            return
         if not self._confirm_dem_size(specification):
             return
 
@@ -4466,6 +4890,7 @@ class LandscapeExplorerDialog(QDialog):
         size_gb = cells * DEM_BYTES_PER_CELL / 1e9
 
         box = QMessageBox(self)
+        use_plugin_font(box)
         box.setIcon(QMessageBox.Icon.Critical if strong else QMessageBox.Icon.Warning)
         box.setWindowTitle(tr("Large DEM", "大きなDEM"))
         box.setText(tr(
@@ -4730,6 +5155,15 @@ class LandscapeExplorerDialog(QDialog):
         self._add_package_layers(package_path, manifest)
         self._overwritePackagePath = None
         fallback = _coverage_gap_text(manifest) + _grass_fallback_text(manifest)
+        removed = result.get("edited_dem_removed")
+        if removed:
+            # The placed DEM now lives in the analysis ZIP only.
+            if self._localDemPath and packages.is_same_file_path(removed, self._localDemPath):
+                self._set_local_dem("", None)
+            fallback += "\n" + tr(
+                "The placed DEM was put into the analysis ZIP and removed from its folder.",
+                "位置合わせしたDEMは解析のZIPに入れ、専用フォルダからは消しました。",
+            )
         if self._enter_management(package_path):
             # The switch cleared the status; the details are in the summary.
             self.resultEdit.setPlainText(
@@ -5362,6 +5796,176 @@ def _valid_footprint_wkt(valid, gt, scale_x, scale_y, crs_wkt):
     return merged.ExportToWkt()
 
 
+# Within this distance (pixels) of the preview centre the snap marker jumps
+# to the centre and the wheel zooms about it (as in Kozu XML Integrator).
+PREVIEW_CENTRE_SNAP_PX = 15
+# The red cross shows only within this distance of the centre.
+PREVIEW_CENTRE_CROSS_PX = 45
+# The preview zooms out at most until the whole earth fills its width: the
+# earth as tile maps draw it, the Web Mercator world (EPSG:3857), put into
+# the preview's CRS.
+WEB_MERCATOR_WORLD = (-20037508.3428, -20037508.3428, 20037508.3428, 20037508.3428)
+# Smallest width of the right panel (with the plugin's text size, ui_fonts).
+CONTROL_PANEL_MIN_WIDTH = 600
+# Below this agreement the converted DEM is taken as not lying where the
+# network DEM has the same land.
+CONVERT_LOW_AGREEMENT = 0.8
+
+
+def _off_earth_text(converted=True):
+    """Why a (converted) DEM has no place, and what to check."""
+
+    # The finding first, as its own paragraph; then what was done and what
+    # to check.
+    if not converted:
+        return tr(
+            "This DEM's coordinates are not a place on the earth in its coordinate "
+            "system.\n\n"
+            "So the preview was not moved.\n"
+            "Its coordinate system or units may be wrong.",
+            "このDEMの座標は、その座標系では地球上の位置になりません。\n\n"
+            "そのためプレビューは動かしていません。\n"
+            "座標系か単位が違っている可能性があります。",
+        )
+    return tr(
+        "The converted DEM's coordinates are not a place on the earth in the chosen "
+        "coordinate system.\n\n"
+        "So the preview was not moved.\n"
+        "Check the coordinate system and the plane unit (a drawing in mm read as "
+        "metres lands far outside), then convert the file again.",
+        "変換したDEMの座標が、選んだ座標系では地球上の位置になりません。\n\n"
+        "そのためプレビューは動かしていません。\n"
+        "座標系と平面の単位を確かめて（mm単位の図面をmとして読むと、はるか遠くになります）、"
+        "もう一度変換してください。",
+    )
+
+
+def _conversion_reference_text(kind, dataset):
+    """The network DEM a converted DEM was compared with, for the user."""
+
+    if not kind:
+        return ""
+    name = (
+        tr("GSI elevation tiles", "国土地理院 標高タイル") if kind == "gsi" else "AWS Terrarium"
+    )
+    return "{} ({})".format(name, dataset) if dataset else name
+
+
+def _conversion_texts(record):
+    """(summary, details) of a converted DEM from its record, for the Status
+    box: the summary (two lines), then what it was compared with, the
+    agreement, the height ratio and datum difference, and the notes.
+    """
+
+    comparison = record.get("comparison") or {}
+    crs = record.get("crs", "")
+    fit = comparison.get("fit")
+    reference = _conversion_reference_text(comparison.get("reference"), comparison.get("dataset"))
+    lines = [
+        tr("File: {}", "元のファイル：{}").format(record.get("original_file", "")),
+        tr("Coordinate system: {}", "座標系：{}").format(crs),
+    ]
+    reading = [tr("unit {}", "単位 {}").format(record.get("unit") or "m")]
+    if record.get("swapped_xy"):
+        reading.insert(0, tr("X and Y swapped", "XとYを入れ替え"))
+    lines.append(tr("Read as: {}", "読み方：{}").format(tr(", ", "、").join(reading)))
+    if reference:
+        lines.append(tr("Compared with: {}", "比べた相手：{}").format(reference))
+    check_list = tr(
+        "When the agreement is low, check:\n"
+        "  - the coordinate system (the wrong zone)\n"
+        "  - a drawing in local (site) coordinates\n"
+        "  - a plane unit other than metres (mm, ...)\n"
+        "  - X and Y swapped (survey X north, Y east kept as they are)\n"
+        "  - a drawing in the old Tokyo datum (off by a few hundred metres)",
+        "一致率が低いときは、次を確かめてください：\n"
+        "  ・座標系（系）の選び間違い\n"
+        "  ・任意座標（現場の座標）で描かれた図面\n"
+        "  ・平面の単位がmでない（mmなど）\n"
+        "  ・XとYの入れ替え（測量のX＝北、Y＝東のまま）\n"
+        "  ・旧日本測地系の図面（数百mずれます）",
+    )
+    notes = []
+    if fit:
+        lines += [
+            tr("Agreement r = {:.2f} ({:,} cells compared)", "一致率 r = {:.2f}（{:,}セルで比較）").format(
+                fit["r"], fit["n"]
+            ),
+            tr("Height ratio a = {:.3g}", "高さの比 a = {:.3g}").format(fit["a"]),
+            tr(
+                "Height datum difference b = {:+.1f} m (this DEM minus the network DEM)",
+                "基準の差 b = {:+.1f} m（このDEM − ネットワークDEM）",
+            ).format(fit["b"]),
+        ]
+        summary = tr("Converted DEM ({}): agreement r = {:.2f}", "変換DEM（{}）：一致率 r = {:.2f}").format(
+            crs, fit["r"]
+        )
+        if fit["r"] < CONVERT_LOW_AGREEMENT:
+            summary += "\n" + tr(
+                "Low: check the coordinate system and units.",
+                "低い一致率です。座標系と単位を確かめてください。",
+            )
+            notes.append(check_list)
+        elif not 0.9 <= fit["a"] <= 1.1:
+            summary += "\n" + tr(
+                "The height unit may not be metres (ratio {:.3g}).",
+                "高さの単位がmでない可能性があります（比 {:.3g}）。",
+            ).format(fit["a"])
+            notes.append(tr(
+                "Heights change {:.3g} times as much as the network DEM's: the "
+                "height unit may not be metres.",
+                "高さの変化がネットワークDEMの{:.3g}倍です。高さの単位がmでない"
+                "可能性があります。",
+            ).format(fit["a"]))
+        else:
+            summary += "\n" + tr(
+                "Height ratio {:.2f}, datum difference {:+.1f} m.",
+                "高さの比 {:.2f}、基準の差 {:+.1f} m。",
+            ).format(fit["a"], fit["b"])
+            notes.append(tr(
+                "It agrees well with the network DEM.",
+                "ネットワークDEMとよく一致しています。",
+            ))
+            if abs(fit["b"]) >= 1.0:
+                notes.append(tr(
+                    "The datum difference changes only the contour values; "
+                    "hillshade, slope, CS Map and catchments are not affected.",
+                    "基準の差は等高線の数値にだけ表れます。陰影・傾斜・CS立体図・"
+                    "流域範囲には影響しません。",
+                ))
+    else:
+        skipped = comparison.get("skipped")
+        if comparison.get("error"):
+            reason = tr(
+                "The network DEM could not be fetched: {}",
+                "ネットワークDEMを取得できませんでした：{}",
+            ).format(comparison["error"])
+        elif skipped == "no_place":
+            reason = tr(
+                "In this coordinate system the coordinates are not a place on the earth.",
+                "この座標系では、座標が地球上の位置になりません。",
+            )
+        elif skipped == "too_wide":
+            reason = tr(
+                "It covers too wide an area to compare.",
+                "範囲が広すぎて比べていません。",
+            )
+        else:
+            reason = tr(
+                "Too few cells overlap the network DEM to compare: outside its "
+                "area, or placed somewhere else.",
+                "ネットワークDEMと重なる値が少なく、比べられませんでした（提供範囲の外か、"
+                "別の場所に置かれています）。",
+            )
+        summary = tr("Converted DEM ({}): not compared.", "変換DEM（{}）：比べられませんでした。").format(
+            crs
+        ) + "\n" + tr("Check the coordinate system and units.", "座標系と単位を確かめてください。")
+        lines.append(reason)
+        notes.append(check_list)
+    details = "\n".join(lines) + "\n\n" + tr("Notes:", "注意事項：") + "\n" + "\n".join(notes)
+    return summary, details
+
+
 # ISO 216 A sizes, (short side, long side) in mm.
 PAPER_SIZES_MM = {
     "A5": (148, 210),
@@ -5491,6 +6095,7 @@ def make_print_layout(parent, iface, name, landscape, layers, legend_layers, ext
             "前に作った印刷レイアウト（{}）を、この解析のものに置き換えます。",
         ).format(previous)
     box = QMessageBox(parent)
+    use_plugin_font(box)
     box.setIcon(QMessageBox.Icon.Question)
     box.setWindowTitle(tr("Print layout", "印刷レイアウト"))
     box.setText(question)
@@ -5642,6 +6247,12 @@ def _dem_credit(source):
             source.get("dataset", "")
         )
     if kind == "local":
+        conversion = source.get("conversion") or {}
+        if conversion.get("original_file"):
+            # A DEM without a position, converted with a chosen coordinate system.
+            return tr(
+                "Local file: {} (converted)", "ローカルファイル：{}（変換）"
+            ).format(conversion["original_file"])
         return tr("Local file: {}", "ローカルファイル：{}").format(source.get("name", ""))
     if source.get("credit"):
         # The credit line in the form the provider asks for, kept as it is.
@@ -6677,8 +7288,8 @@ def _dem_size_estimate(specification):
     measure.setSourceCrs(crs, project.transformContext())
     if not measure.setEllipsoid(crs.ellipsoidAcronym() or "EPSG:7030"):
         measure.setEllipsoid("EPSG:7030")
-    area_m2 = measure.measureArea(frame)
     try:
+        area_m2 = measure.measureArea(frame)
         center = QgsCoordinateTransform(
             crs, QgsCoordinateReferenceSystem("EPSG:4326"), project
         ).transform(frame.centroid().asPoint())

@@ -6,6 +6,7 @@ import datetime
 import json
 import math
 import os
+import shutil
 import tempfile
 import traceback
 import uuid
@@ -19,7 +20,15 @@ from qgis.core import Qgis, QgsMessageLog, QgsProcessingFeedback
 from ..core.packages import MANIFEST_NAME
 from ..terrain.analysis import compute_hillshade, compute_slope_deg
 from ..terrain.cs_map import compute_cs_map
-from ..terrain import dem_sources, nagano_rinmu, nagano_sabo, remote_dem, remote_zip, vs_lp
+from ..terrain import (
+    dem_sources,
+    local_convert,
+    nagano_rinmu,
+    nagano_sabo,
+    remote_dem,
+    remote_zip,
+    vs_lp,
+)
 from ..terrain.dem_loader import DEMLoader, GSITileDEMLoader, save_as_geotiff
 from ..terrain.result_writer import save_raster, save_rgba_raster
 from ..terrain import contours, watershed
@@ -92,6 +101,9 @@ def create_terrain_package(specification, context):
             parts, context, specification.get("aoi_clip")
         )
 
+    # A converted DEM (qlae_edit_dem/) goes into the ZIP and is
+    # removed from its folder once the ZIP is written.
+    edited_path = None
     # The DEMs opened below are closed (ExitStack) before the temporary folder
     # is removed: Windows cannot delete a file GDAL still holds open.
     with tempfile.TemporaryDirectory(
@@ -118,6 +130,15 @@ def create_terrain_package(specification, context):
             specification, acquisition_frame, temporary, context
         )
         opened.callback(loader.close)
+        if source.get("kind") == "local" and local_convert.is_edit_file(
+            specification.get("source_path")
+        ):
+            edited_path = specification["source_path"]
+            member = "data/qlae_edit/" + os.path.basename(edited_path)
+            os.makedirs(os.path.join(temporary, "data", "qlae_edit"), exist_ok=True)
+            shutil.copy2(edited_path, os.path.join(temporary, *member.split("/")))
+            source["edited_dem"] = member
+            source["conversion"] = local_convert.read_record(edited_path)
 
         context.check()
         prepared = loader.prepare_for_analysis()
@@ -359,7 +380,15 @@ def create_terrain_package(specification, context):
             if os.path.exists(temporary_zip):
                 os.remove(temporary_zip)
 
-    return {"package_path": package_path, "manifest": manifest}
+    removed = None
+    if edited_path:
+        # Closed now (the ExitStack above): the ZIP holds it from here on.
+        try:
+            os.remove(edited_path)
+            removed = edited_path
+        except OSError:
+            pass
+    return {"package_path": package_path, "manifest": manifest, "edited_dem_removed": removed}
 
 
 # Polygons combined per batch, then the batches together (progress, and a

@@ -20,6 +20,7 @@ from qgis.PyQt.QtWidgets import (
 from qgis.core import QgsLayerTreeGroup, QgsLayerTreeLayer
 
 from .i18n import tr
+from .ui_fonts import PLUGIN_SIZE_RULE
 from .layer_combo import LayerTreeOrderComboBox, add_layer_choice
 
 
@@ -87,7 +88,6 @@ class AnalysisManagementPanel(QWidget):
         self.detailsLabel.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        self.detailsLabel.setStyleSheet("font-size: 9pt;")
         analysis_layout.addWidget(self.detailsLabel)
         layout.addWidget(analysis_box)
 
@@ -108,7 +108,6 @@ class AnalysisManagementPanel(QWidget):
             layers_box,
         )
         note.setWordWrap(True)
-        note.setStyleSheet("font-size: 9pt;")
         layers_layout.addWidget(note)
         layout.addWidget(layers_box, 1)
 
@@ -149,7 +148,7 @@ class AnalysisManagementPanel(QWidget):
         self.exitButton.setObjectName("qlaeExitButton")
         self.exitButton.setStyleSheet(
             "QPushButton#qlaeExitButton {background-color: #2b6cb0; color: white;"
-            "font-weight: bold; border: 1px solid #1e4c7d; border-radius: 3px;"
+            "font-weight: bold; " + PLUGIN_SIZE_RULE + " border: 1px solid #1e4c7d; border-radius: 3px;"
             "padding: 4px 12px;}"
             "QPushButton#qlaeExitButton:hover {background-color: #245a93;}"
             "QPushButton#qlaeExitButton:pressed {background-color: #1e4c7d;}"
