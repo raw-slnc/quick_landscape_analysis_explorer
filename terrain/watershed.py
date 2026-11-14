@@ -36,6 +36,14 @@ CELL_SIZE_M = 5.0
 # ... and the smallest catchment is this large (ha). Morizon Next uses 500
 # cells, which is 5 ha on a 10 m DEM; 2 ha here, to read the terrain by
 # slopes and the larger hollows (5 ha was too coarse for that).
+# r.watershed (and catchment_grid) make one catchment per stream segment, and
+# the threshold is the smallest catchment only at a stream head: between two
+# close confluences a catchment can be a few cells. Those under the threshold
+# are joined to the catchment they drain into (_join_small_basins). Morizon
+# Next keeps them, as it looks for the slopes right around buildings; here
+# the catchments are for reading the terrain. Holes inside the DEM are filled
+# first (_fill_enclosed_holes), and loose pieces of a few cells are put into
+# a neighbouring catchment last (_absorb_fragments).
 MIN_AREA_HA = 2.0
 # r.watershed settings shared with Morizon Next.
 CONVERGENCE = 5
@@ -152,6 +160,8 @@ def compute_catchments(data, gt, crs_wkt, frame_envelope, context, feedback, cel
             raise WatershedError("Could not prepare the DEM for catchments.")
         warped = None
         context.check()
+        filled = _fill_enclosed_holes(resampled)
+        context.check()
 
         threshold = max(1, int(round(MIN_AREA_HA * 10000.0 / (target * target))))
         grid = gdal.Open(resampled)
@@ -181,6 +191,14 @@ def compute_catchments(data, gt, crs_wkt, frame_envelope, context, feedback, cel
         if not os.path.exists(basin_path):
             raise WatershedError("The catchments could not be computed.")
 
+        context.report("Catchments: joining the small ones...")
+        joined_path = os.path.join(work_dir, "basin_joined.tif")
+        joined = _join_small_basins(basin_path, resampled, threshold, joined_path)
+        if joined is not None:
+            basin_path = joined_path
+        _absorb_fragments(basin_path)
+        context.check()
+
         context.report("Catchments: making polygons...")
         catchments = _basin_polygons(basin_path, crs_wkt, frame_envelope, context)
         details = {
@@ -190,6 +208,11 @@ def compute_catchments(data, gt, crs_wkt, frame_envelope, context, feedback, cel
                 "cells": cells,
             },
             "grass_error": grass_error,
+            # Catchments under the threshold joined to the one below them
+            # (None when the grids did not match and nothing was joined).
+            "joined_small": joined,
+            # Cells of holes in the DEM filled for the catchments.
+            "filled_cells": filled,
         }
         return catchments, engine, details
     finally:
@@ -267,6 +290,214 @@ def _numpy_basins(dem_path, basin_path, threshold, context):
     out_band.WriteArray(labels)
     out_band = None
     out = None
+
+
+def _fill_enclosed_holes(dem_path):
+    """Fill the holes in the catchment DEM that do not reach its edge.
+
+    A hole (no elevation: a water surface, a gap in the survey) is the
+    outside of the terrain for r.watershed: water ends in it, and the
+    catchments go round it in small pieces. Holes inside the DEM are filled
+    from the elevations around them, so the water runs on through them;
+    holes reaching the edge (the sea, outside the data) stay. Only the DEM
+    for the catchments is filled, not the DEM of the analysis.
+
+    Returns the number of cells filled.
+    """
+    dataset = gdal.Open(dem_path, gdal.GA_Update)
+    band = dataset.GetRasterBand(1)
+    nodata = band.GetNoDataValue()
+    data = band.ReadAsArray()
+    missing = ~np.isfinite(data)
+    if nodata is not None:
+        missing |= data == nodata
+    if not missing.any():
+        return 0
+    rows, cols = missing.shape
+
+    # The holes, one polygon each (8-connected), and those not at the edge.
+    memory = gdal.GetDriverByName("MEM")
+    holes = memory.Create("", cols, rows, 1, gdal.GDT_Byte)
+    holes.SetGeoTransform((0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
+    holes_band = holes.GetRasterBand(1)
+    holes_band.WriteArray(missing.astype(np.uint8))
+    vectors = ogr.GetDriverByName("Memory").CreateDataSource("")
+    layer = vectors.CreateLayer("holes", None, ogr.wkbPolygon)
+    layer.CreateField(ogr.FieldDefn("DN", ogr.OFTInteger))
+    gdal.Polygonize(holes_band, holes_band, layer, 0, ["8CONNECTED=8"])
+    inside = ogr.GetDriverByName("Memory").CreateDataSource("")
+    inside_layer = inside.CreateLayer("inside", None, ogr.wkbPolygon)
+    for feature in layer:
+        xmin, xmax, ymin, ymax = feature.GetGeometryRef().GetEnvelope()
+        if xmin > 0 and ymin > 0 and xmax < cols and ymax < rows:
+            inside_layer.CreateFeature(feature.Clone())
+    feature = None
+    if inside_layer.GetFeatureCount() == 0:
+        return 0
+    enclosed_raster = memory.Create("", cols, rows, 1, gdal.GDT_Byte)
+    enclosed_raster.SetGeoTransform((0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
+    gdal.RasterizeLayer(enclosed_raster, [1], inside_layer, burn_values=[1])
+    enclosed = (enclosed_raster.GetRasterBand(1).ReadAsArray() == 1) & missing
+    layer = inside_layer = vectors = inside = holes_band = holes = enclosed_raster = None
+
+    # Interpolate every hole on a copy; keep the values only in the
+    # enclosed ones.
+    copy = memory.CreateCopy("", dataset)
+    copy_band = copy.GetRasterBand(1)
+    gdal.FillNodata(copy_band, None, max(rows, cols), 0)
+    interpolated = copy_band.ReadAsArray()
+    copy_band = copy = None
+    usable = enclosed & np.isfinite(interpolated)
+    if nodata is not None:
+        usable &= interpolated != nodata
+    data[usable] = interpolated[usable]
+    band.WriteArray(data)
+    band.FlushCache()
+    band = None
+    dataset = None
+    return int(usable.sum())
+
+
+# Pieces of a catchment smaller than this (cells) are put into the largest
+# catchment next to them. Where catchments meet only at a corner, a few cells
+# are left apart from their catchment, and the rounded boundary drew them as
+# a small ring.
+FRAGMENT_CELLS = 10
+
+
+def _absorb_fragments(basin_path):
+    """Put the small loose pieces of catchments into a neighbouring one."""
+    dataset = gdal.Open(basin_path, gdal.GA_Update)
+    band = dataset.GetRasterBand(1)
+    gdal.SieveFilter(band, band.GetMaskBand(), band, FRAGMENT_CELLS, 4)
+    band.FlushCache()
+    band = None
+    dataset = None
+
+
+# The 8 neighbours of a cell (row, column offsets).
+_NEIGHBOURS = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
+
+
+def _join_small_basins(basin_path, dem_path, threshold, out_path):
+    """Join catchments under ``threshold`` cells to the catchment they drain into.
+
+    The catchment drained into is the one with the lowest cell next to the
+    small one (where its water leaves it). Joined catchments that are still
+    small are joined again. Catchments at the edge of the grid or next to
+    cells without a catchment are not joined: where they drain is not known.
+
+    Writes the joined catchment raster to ``out_path`` (0 = no catchment) and
+    returns how many catchments were joined, or None if the DEM and the
+    catchment raster are not the same grid (nothing written).
+    """
+    import heapq
+
+    dataset = gdal.Open(basin_path)
+    band = dataset.GetRasterBand(1)
+    labels = band.ReadAsArray().astype(np.int64)
+    nodata = band.GetNoDataValue()
+    gt, projection = dataset.GetGeoTransform(), dataset.GetProjection()
+    band = None
+    dataset = None
+    if nodata is not None:
+        labels[labels == int(nodata)] = 0
+    labels[labels < 0] = 0
+
+    dataset = gdal.Open(dem_path)
+    band = dataset.GetRasterBand(1)
+    z = band.ReadAsArray().astype(np.float64)
+    dem_nodata = band.GetNoDataValue()
+    band = None
+    dataset = None
+    if z.shape != labels.shape:
+        return None
+    if dem_nodata is not None:
+        z[z == dem_nodata] = np.inf
+    z[~np.isfinite(z)] = np.inf
+
+    rows, cols = labels.shape
+    top = int(labels.max()) if labels.size else 0
+    count = np.bincount(labels.ravel(), minlength=top + 1)
+    edge = np.zeros(top + 1, dtype=bool)
+    edge[labels[0, :]] = True
+    edge[labels[-1, :]] = True
+    edge[labels[:, 0]] = True
+    edge[labels[:, -1]] = True
+
+    # For each pair of touching catchments (a, b): the lowest cell of b
+    # next to a.
+    keys, heights = [], []
+    for dr, dc in _NEIGHBOURS:
+        a = labels[max(0, -dr):rows - max(0, dr), max(0, -dc):cols - max(0, dc)]
+        b = labels[max(0, dr):rows - max(0, -dr), max(0, dc):cols - max(0, -dc)]
+        zb = z[max(0, dr):rows - max(0, -dr), max(0, dc):cols - max(0, -dc)]
+        edge[a[(a > 0) & (b == 0)]] = True
+        touching = (a > 0) & (b > 0) & (a != b)
+        keys.append(a[touching] * (top + 1) + b[touching])
+        heights.append(zb[touching])
+    keys = np.concatenate(keys)
+    heights = np.concatenate(heights)
+    order = np.lexsort((heights, keys))
+    keys, heights = keys[order], heights[order]
+    first = np.ones(keys.size, dtype=bool)
+    first[1:] = keys[1:] != keys[:-1]
+    neighbours = {}
+    for key, height in zip(keys[first].tolist(), heights[first].tolist()):
+        a, b = divmod(key, top + 1)
+        neighbours.setdefault(a, {})[b] = height
+    edge[0] = True  # 0 is "no catchment", never joined
+
+    sizes = {int(value): int(count[value]) for value in np.nonzero(count)[0] if value > 0}
+    queue = [(size, value) for value, size in sizes.items() if size < threshold and not edge[value]]
+    heapq.heapify(queue)
+    into = {}
+    joined = 0
+    while queue:
+        size, value = heapq.heappop(queue)
+        if value in into or sizes[value] != size or edge[value]:
+            continue  # already joined, grown since, or now at the edge
+        around = neighbours.get(value) or {}
+        if not around:
+            continue
+        target = min(around, key=around.get)
+        # value goes into target: target takes over its neighbours.
+        into[value] = target
+        joined += 1
+        sizes[target] += size
+        edge[target] = edge[target] or edge[value]
+        target_around = neighbours.setdefault(target, {})
+        target_around.pop(value, None)
+        for other, height in around.items():
+            if other == target:
+                continue
+            if height < target_around.get(other, np.inf):
+                target_around[other] = height
+            other_around = neighbours[other]
+            lowest = other_around.pop(value)
+            if lowest < other_around.get(target, np.inf):
+                other_around[target] = lowest
+        del neighbours[value]
+        if sizes[target] < threshold and not edge[target]:
+            heapq.heappush(queue, (sizes[target], target))
+
+    lookup = np.arange(top + 1, dtype=np.int64)
+    for value in into:
+        root = value
+        while root in into:
+            root = into[root]
+        lookup[value] = root
+    out = gdal.GetDriverByName("GTiff").Create(
+        out_path, cols, rows, 1, gdal.GDT_Int32, options=["COMPRESS=LZW", "TILED=YES"]
+    )
+    out.SetGeoTransform(gt)
+    out.SetProjection(projection)
+    out_band = out.GetRasterBand(1)
+    out_band.SetNoDataValue(0)  # no catchment: left out of the polygons
+    out_band.WriteArray(lookup[labels].astype(np.int32))
+    out_band = None
+    out = None
+    return joined
 
 
 def _basin_polygons(basin_path, crs_wkt, frame_envelope, context):

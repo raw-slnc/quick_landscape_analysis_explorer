@@ -342,6 +342,14 @@ def create_terrain_package(specification, context):
                 else "grid cell edges",
                 "cell_size_m": max(watershed.CELL_SIZE_M, float(prepared.cell_size)),
                 "min_area_ha": watershed.MIN_AREA_HA,
+                # Catchments under min_area_ha (between close confluences)
+                # joined to the catchment they drain into.
+                "small_joined": catchment_details.get("joined_small"),
+                # Cells of holes inside the DEM (water, survey gaps) filled
+                # for the catchments only; pieces under fragment_cells cells
+                # put into the largest catchment next to them.
+                "holes_filled_cells": catchment_details.get("filled_cells"),
+                "fragment_cells": watershed.FRAGMENT_CELLS,
                 "acquisition": "A-series frame x{:g} (all analyses on the wider area, "
                 "then cut to the frame)".format(WATERSHED_WIDEN),
                 "catchments": len(catchments),

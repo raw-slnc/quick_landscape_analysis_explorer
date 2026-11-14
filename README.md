@@ -143,7 +143,15 @@ right of the window opens its overview page.
     (differences only along the outer edge of the wider DEM), and it takes
     a few times longer. The print layout names the computation used. The DEM is
     fetched three times wider and higher than the frame, every analysis
-    runs on that area, and the results are cut to the frame.
+    runs on that area, and the results are cut to the frame. Gaps in the
+    DEM (such as water surfaces or missing survey data) would be the outside
+    of the terrain for the catchments, so the water would end in them and
+    the catchments would break up around them. Gaps surrounded by the DEM
+    are therefore filled from the elevations around them, for the
+    catchments only (the DEM and the other maps keep the gaps); the water
+    then runs on through them, though the filled surface is an estimate,
+    not the real terrain. Gaps reaching the edge of the DEM (such as the
+    sea) are not filled.
 - Every result uses one A-series output frame around the area; DEM outside
   the frame may still be used to compute edge values correctly.
 - The QGIS project must be saved first. Each analysis is saved as one ZIP
