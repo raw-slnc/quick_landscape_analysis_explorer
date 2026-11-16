@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-# Adapted from Forestry Operations Lite, licensed under GPL-2.0-or-later.
 """CS MAP export raster synthesis.
 
-This module implements an original CS-style terrain visualization for FOL,
+This module implements an original CS-style terrain visualization,
 using the plugin's DEM-derived slope and curvature arrays.
 """
 import numpy as np
@@ -12,7 +11,7 @@ from .analysis import compute_curvature, compute_slope_deg
 
 CUSTOM_CS_COLOR_PRESET = {
     "name": "custom_cs",
-    "description": "FOL custom CS color balance, tuned against same-area DEM/reference comparison.",
+    "description": "Custom CS color balance, tuned against same-area DEM/reference comparison.",
     "smooth_sigma_px": 2.4,
     "slope_percentiles": (3.0, 97.0),
     "elevation_percentiles": (2.0, 98.0),
@@ -242,7 +241,7 @@ def compute_cs_map(dem, cell_size):
 
     curv_neutral = preset["curvature_neutral"]
     # Ridge emphasis layer: convex terrain receives the red-brown shoulder tone
-    # used as FOL's detailed terrain signal.
+    # used as the detailed terrain signal.
     ridge_red = _lerp_color(curv_neutral, preset["ridge_red"], ridge_t)
     ridge_alpha = _soft_alpha(ridge_mask, *preset["ridge_alpha"])
     ridge_slope_gate = np.clip(

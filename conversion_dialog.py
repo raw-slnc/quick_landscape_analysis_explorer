@@ -42,6 +42,7 @@ from qgis.core import (
 )
 from qgis.gui import QgsProjectionSelectionWidget
 
+from .core.crs import gdal_wkt
 from .i18n import tr
 from .terrain import local_convert, world_country
 from .terrain.dem_loader import GSITileDEMLoader
@@ -724,7 +725,7 @@ class ConversionDialog(QDialog):
 
         self._stageLabel.setStyleSheet("")
         crs = self.crs()
-        crs_wkt = crs.toWkt()
+        crs_wkt = gdal_wkt(crs)
         unit = self.unit()
         swap = self.swapAxes()
         layers = self.chosenLayers()

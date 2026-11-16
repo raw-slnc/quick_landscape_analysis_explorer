@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# Adapted from Forestry Operations Lite (same author).
 """Virtual Shizuoka LP point cloud S3 utilities.
 
 タイルコード体系（EPSG:6676、平面直角第8系）:

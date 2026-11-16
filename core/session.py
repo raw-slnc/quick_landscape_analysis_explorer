@@ -44,7 +44,7 @@ def remove_layers_without_package(project=None):
     """Remove managed layers whose analysis ZIP no longer exists.
 
     Not counted as a change of the project (closing without doing anything
-    does not ask to save), like Morizon Next.
+    does not ask to save).
     """
 
     project = project or QgsProject.instance()

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Terrain derivatives adapted from Forestry Operations Lite (GPL-2.0-or-later).
+"""Terrain derivatives.
 
 地形解析アルゴリズム群
   compute_slope_deg  : Horn法で傾斜角[度]を計算

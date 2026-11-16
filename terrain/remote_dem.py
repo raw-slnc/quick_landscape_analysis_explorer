@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# Adapted from Forestry Operations Lite (same author), dem_worker.py.
 """Open overseas DEMs fetched for an extent (no login required).
 
 Netherlands AHN4 DTM (PDOK WCS), France IGN LiDAR HD MNT (Géoplateforme WMS-R),

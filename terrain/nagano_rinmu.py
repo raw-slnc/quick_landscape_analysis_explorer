@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# Adapted from Forestry Operations Lite (same author).
 """長野県 林務部 0.5mメッシュDEM（2013〜2014年度計測）ユーティリティ。
 
 データ配布元:

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Catchment (sub-basin) polygons with GRASS r.watershed, or with numpy.
 
-GRASS: same tool and settings as Morizon Next's catchment aggregation (MFD,
-convergence 5), so the boundaries agree. numpy (terrain/catchment_grid.py):
+GRASS: r.watershed with the settings of the original MORIZON's catchments
+(MFD, convergence 5). numpy (terrain/catchment_grid.py):
 the same steps without GRASS, for a QGIS without it (the macOS disk image
 has none); close to r.watershed, not the same cell for cell. Which one runs
 is chosen by CATCHMENT_ENGINE.
@@ -23,7 +23,7 @@ import time
 import numpy as np
 from osgeo import gdal, ogr, osr
 
-from . import catchment_grid
+from . import catchment_grid, dem_gaps
 
 # Which computation makes the catchments (an internal switch, not in the UI):
 #   "auto"  : GRASS r.watershed where QGIS has it, numpy otherwise
@@ -33,19 +33,19 @@ CATCHMENT_ENGINE = "auto"
 
 # Catchments are computed on this grid (m) ...
 CELL_SIZE_M = 5.0
-# ... and the smallest catchment is this large (ha). Morizon Next uses 500
-# cells, which is 5 ha on a 10 m DEM; 2 ha here, to read the terrain by
-# slopes and the larger hollows (5 ha was too coarse for that).
+# ... and the smallest catchment is this large (ha). The original MORIZON
+# uses 500 cells, which is 5 ha on a 10 m DEM; 2 ha here, to read the
+# terrain by slopes and the larger hollows (5 ha was too coarse for that).
 # r.watershed (and catchment_grid) make one catchment per stream segment, and
 # the threshold is the smallest catchment only at a stream head: between two
 # close confluences a catchment can be a few cells. Those under the threshold
-# are joined to the catchment they drain into (_join_small_basins). Morizon
-# Next keeps them, as it looks for the slopes right around buildings; here
-# the catchments are for reading the terrain. Holes inside the DEM are filled
-# first (_fill_enclosed_holes), and loose pieces of a few cells are put into
+# are joined to the catchment they drain into (_join_small_basins). Kept,
+# they suit a look at the slopes right around buildings; here the
+# catchments are for reading the terrain. Holes inside the DEM are filled
+# first (fill_enclosed_holes), and loose pieces of a few cells are put into
 # a neighbouring catchment last (_absorb_fragments).
 MIN_AREA_HA = 2.0
-# r.watershed settings shared with Morizon Next.
+# r.watershed settings of the original MORIZON.
 CONVERGENCE = 5
 MEMORY_MB = 300
 METHOD_TEXT = "GRASS r.watershed, MFD (convergence 5)"
@@ -94,8 +94,8 @@ def _ascii_safe_work_dir():
     """A work folder whose path has no full-width characters.
 
     GRASS fails on paths with non-ASCII characters (for example a Japanese
-    Windows user name in the temp folder). Like Morizon Next, use a folder at
-    the root of the temp drive on Windows.
+    Windows user name in the temp folder). Use a folder at the root of the
+    temp drive on Windows.
     """
     base = tempfile.gettempdir()
     drive = os.path.splitdrive(base)[0]
@@ -160,7 +160,7 @@ def compute_catchments(data, gt, crs_wkt, frame_envelope, context, feedback, cel
             raise WatershedError("Could not prepare the DEM for catchments.")
         warped = None
         context.check()
-        filled = _fill_enclosed_holes(resampled)
+        filled = fill_enclosed_holes(resampled)
         context.check()
 
         threshold = max(1, int(round(MIN_AREA_HA * 10000.0 / (target * target))))
@@ -235,7 +235,7 @@ def _log_grass_failure(message):
 
 
 def _grass_basins(dem_path, basin_path, threshold, work_dir, context, feedback):
-    """Catchment raster from GRASS r.watershed (as Morizon Next)."""
+    """Catchment raster from GRASS r.watershed."""
     import processing
     from processing.tools import dataobjects
     from qgis.core import QgsProcessingUtils
@@ -248,7 +248,7 @@ def _grass_basins(dem_path, basin_path, threshold, work_dir, context, feedback):
         )
     processing_context = dataobjects.createContext(feedback)
     # GRASS asks for the temporary folder more than once; give it the
-    # ASCII-safe one first, with "/" separators (see Morizon Next).
+    # ASCII-safe one first, with "/" separators.
     processing_context.setTemporaryFolder(work_dir.replace("\\", "/"))
     QgsProcessingUtils.tempFolder(processing_context)
     context.report("Catchments: computing flow (GRASS r.watershed, MFD)...")
@@ -292,15 +292,20 @@ def _numpy_basins(dem_path, basin_path, threshold, context):
     out = None
 
 
-def _fill_enclosed_holes(dem_path):
-    """Fill the holes in the catchment DEM that do not reach its edge.
+def fill_enclosed_holes(dem_path, near_holes=False):
+    """Fill the holes in a DEM (a file, updated) that do not reach its edge.
 
-    A hole (no elevation: a water surface, a gap in the survey) is the
-    outside of the terrain for r.watershed: water ends in it, and the
-    catchments go round it in small pieces. Holes inside the DEM are filled
-    from the elevations around them, so the water runs on through them;
-    holes reaching the edge (the sea, outside the data) stay. Only the DEM
-    for the catchments is filled, not the DEM of the analysis.
+    For the catchments: a hole (no elevation: a water surface, a gap in the
+    survey) is the outside of the terrain for r.watershed: water ends in it,
+    and the catchments go round it in small pieces. Holes inside the DEM are
+    filled from the elevations around them, so the water runs on through
+    them; holes reaching the edge (the sea, outside the data) stay. Only the
+    DEM for the catchments is filled, not the DEM of the analysis. Also used
+    for the DEM for the GeoPDF (result_writer.save_geopdf_dem).
+
+    near_holes: look for elevations only as far as the largest hole is wide
+    (fast when large areas without data reach the edge; the values in the
+    holes can differ slightly from a search over the whole DEM).
 
     Returns the number of cells filled.
     """
@@ -321,16 +326,18 @@ def _fill_enclosed_holes(dem_path):
     holes.SetGeoTransform((0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
     holes_band = holes.GetRasterBand(1)
     holes_band.WriteArray(missing.astype(np.uint8))
-    vectors = ogr.GetDriverByName("Memory").CreateDataSource("")
+    vectors = dem_gaps.memory_vector_datasource()
     layer = vectors.CreateLayer("holes", None, ogr.wkbPolygon)
     layer.CreateField(ogr.FieldDefn("DN", ogr.OFTInteger))
     gdal.Polygonize(holes_band, holes_band, layer, 0, ["8CONNECTED=8"])
-    inside = ogr.GetDriverByName("Memory").CreateDataSource("")
+    inside = dem_gaps.memory_vector_datasource()
     inside_layer = inside.CreateLayer("inside", None, ogr.wkbPolygon)
+    widest = 0
     for feature in layer:
         xmin, xmax, ymin, ymax = feature.GetGeometryRef().GetEnvelope()
         if xmin > 0 and ymin > 0 and xmax < cols and ymax < rows:
             inside_layer.CreateFeature(feature.Clone())
+            widest = max(widest, xmax - xmin, ymax - ymin)
     feature = None
     if inside_layer.GetFeatureCount() == 0:
         return 0
@@ -344,7 +351,8 @@ def _fill_enclosed_holes(dem_path):
     # enclosed ones.
     copy = memory.CreateCopy("", dataset)
     copy_band = copy.GetRasterBand(1)
-    gdal.FillNodata(copy_band, None, max(rows, cols), 0)
+    reach = int(widest) + 2 if near_holes else max(rows, cols)
+    gdal.FillNodata(copy_band, None, reach, 0)
     interpolated = copy_band.ReadAsArray()
     copy_band = copy = None
     usable = enclosed & np.isfinite(interpolated)
@@ -507,7 +515,7 @@ def _basin_polygons(basin_path, crs_wkt, frame_envelope, context):
     cols, rows = dataset.RasterXSize, dataset.RasterYSize
     reference = osr.SpatialReference()
     reference.ImportFromWkt(crs_wkt)
-    memory = ogr.GetDriverByName("Memory").CreateDataSource("")
+    memory = dem_gaps.memory_vector_datasource()
     layer = memory.CreateLayer("basins", reference, ogr.wkbPolygon)
     layer.CreateField(ogr.FieldDefn("DN", ogr.OFTInteger))
     gdal.Polygonize(band, band.GetMaskBand(), layer, 0)

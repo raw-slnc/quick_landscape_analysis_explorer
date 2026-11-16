@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# Adapted from Forestry Operations Lite (same author).
 """長野県 砂防課 R3-4 0.5mメッシュDEM ユーティリティ（テスト実装、未検証部分あり）。
 
 データ配布元:

@@ -9,7 +9,7 @@ Each keeps its original license file. They are modified from the original releas
 - Copyright (c) 2013-2017 by Christian Heimes. Licensed to PSF under a Contributor Agreement.
 - License: Python Software Foundation License Version 2, see `defusedxml/LICENSE`
 - Used for: parsing the VIRTUAL SHIZUOKA S3 bucket listings safely (Windows QGIS does not always include defusedxml)
-- Changes from the original release (same copy as in Forestry Operations Lite):
+- Changes from the original release:
   - Only `__init__.py`, `common.py` and `ElementTree.py` are kept.
   - `ElementTree.py` imports the standard `xml.etree.ElementTree` module through `importlib` instead of direct `from` imports, to pass the plugin submission security scan.
   - In `common.py`, an `assert` check is replaced with an explicit `RuntimeError`.

@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# Adapted from Forestry Operations Lite, licensed under GPL-2.0-or-later.
 import math
 import os
 import numpy as np

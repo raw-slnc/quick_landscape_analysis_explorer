@@ -125,15 +125,15 @@ right of the window opens its overview page.
   - Hillshade.
   - Slope in degrees, in 5° classes from 20° to 45° (the slope colour classes
     of the original MORIZON).
-  - CS Map (the logic of Forestry Operations Lite).
+  - CS Map.
   - Contours: every 10 m, thicker every 20 m and 100 m, from a DEM averaged
     to 5 m and smoothed.
   - Catchment map (map-extent area only; turned on when the preview map
     extent is chosen as the area, and can be turned off): catchments by
     valley, smallest 2 ha, computed by this plugin with GRASS r.watershed.
     Only the tool and its settings (MFD, convergence 5) are the same as in
-    the original MORIZON and Morizon Next, which use them for zone
-    statistics; there the smallest catchment is a number of cells (500, or
+    the original MORIZON, which uses them for zone statistics; there the
+    smallest catchment is a number of cells (500, or
     5 ha on a 10 m DEM), here it is an area on a 5 m grid, whatever the
     DEM's resolution. Where QGIS has no GRASS (for example the
     macOS disk image), or GRASS is listed but does not run, the plugin
@@ -188,6 +188,32 @@ right of the window opens its overview page.
     layers in the layer panel's order, at the extent of the export, also
     without the plugin's window. For a group of files in an exports folder
     whose record is missing, the item is shown greyed out.
+  - DEM for the GeoPDF: the analysis ZIP also holds `dem_for_geopdf.tif`,
+    written out with the layers (not added as a layer). It is a DEM for apps
+    that combine the GeoPDF with a DEM, for example a field map app that
+    shows the terrain in 3D:
+    - in the preview's CRS (the GeoPDF's), with its EPSG code, as an
+      uncompressed single-band GeoTIFF;
+    - over the preview with a margin of 4 cells, cut from the whole DEM
+      fetched for the analysis (not masked to a polygon area);
+    - at most 1,024 cells on its longer side: a finer DEM over a wider area is
+      averaged to coarser cells;
+    - with a height in every cell, so that the 3D terrain has no spikes or
+      walls. In Japan, from GSI data: the sea (GSI vector tiles' water areas
+      coded as sea, or where even DEM10B has no height) is set to 0 m; land
+      without heights (gaps in the survey, and the preview beyond the fetched
+      DEM) is supplemented with DEM5A, then DEM10B; lakes and rivers are
+      interpolated from their banks; small holes are interpolated from around
+      them. Elsewhere, cells without heights are supplemented with AWS Terrain
+      Tiles (Terrarium) as they are (below 0 m: the sea floor, or land below
+      sea level); small holes are interpolated. Heights in the DEM itself are
+      kept as they are.
+
+    Supplemented and interpolated heights are estimates, not survey data. The
+    analysis DEM and the other maps keep their gaps. The tiles are fetched
+    while the analysis runs; analyses made with earlier versions have no DEM
+    for the GeoPDF. If the project's CRS has changed since the analysis, the
+    DEM is warped to the new CRS on export, with no new data.
 
 ## Notices and limits for large processing
 
@@ -224,8 +250,13 @@ one may slow down earlier.
 - `analyses/terrain.py`: the terrain analysis job (runs in a worker thread).
 - `terrain/`: DEM sources and loaders, terrain derivatives, contours,
   catchments and styles.
+- `terrain/result_writer.py`, `terrain/dem_gaps.py`: the DEM for the GeoPDF
+  and the heights given to its cells without one.
 - `core/packages.py`: the analysis ZIP packages.
 - `core/session.py`: the plugin's analysis layers in the project.
+- `core/crs.py`: QGIS CRSs handed to GDAL as WKT2, with their axis order
+  (QGIS's default WKT leaves it out for some CRSs, such as S-JTSK / Krovak
+  EPSG:5513).
 
 ---
 
@@ -253,7 +284,7 @@ Copyright (C) 2026 Hideharu Masai
   Prefecture), and is not endorsed or guaranteed by them.
 - Use of the fetched data and of the maps made from it must follow each
   provider's terms: show the source, and note any processing. For GSI
-  elevation tiles, follow the
+  elevation tiles and vector tiles, follow the
   [GSI terms of use](https://www.gsi.go.jp/kikakuchousei/kikakuchousei40182.html)
   and the Survey Act of Japan.
 - The results are computed from DEMs for reconnaissance and can differ from
@@ -263,5 +294,18 @@ Copyright (C) 2026 Hideharu Masai
 - The slope colour classes and the r.watershed settings for catchments (MFD,
   convergence 5) are taken from the original MORIZON (もりぞん), the forest
   zoning support tool of the Forestry Agency of Japan (Copyright (C) 2021
-  MIERUNE Inc.), and Morizon Next; no code is taken from them for the
-  catchments. This plugin is not made or endorsed by their authors.
+  MIERUNE Inc.); no code is taken from it for the catchments. This plugin
+  is not made or endorsed by its authors.
+- Parts reused from the author's own plugins:
+  - Forestry Operations Lite: the terrain derivatives and the CS Map
+    (`terrain/analysis.py`, `terrain/cs_map.py`), DEM loading and fetching
+    (`terrain/dem_loader.py`, `terrain/remote_dem.py`, `terrain/remote_zip.py`,
+    `terrain/vs_lp.py`, `terrain/nagano_sabo.py`, `terrain/nagano_rinmu.py`),
+    the GeoTIFF writers (`terrain/result_writer.py`), the modified copy of
+    defusedxml (`vendor/defusedxml`) and the developer's name in the window.
+  - Morizon Next: the handling of gaps in the DEM for the GeoPDF
+    (`terrain/dem_gaps.py`), the GRASS r.watershed call and its work
+    folder on Windows (`terrain/watershed.py`), and the analysis layers
+    not counted as a change of the project and the window brought back
+    when a result is ready (`core/session.py`, `dialog.py`).
+  - Kozu XML Integrator: the centre snap of the preview (`dialog.py`).

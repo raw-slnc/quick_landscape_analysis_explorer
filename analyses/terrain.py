@@ -30,7 +30,9 @@ from ..terrain import (
     vs_lp,
 )
 from ..terrain.dem_loader import DEMLoader, GSITileDEMLoader, save_as_geotiff
-from ..terrain.result_writer import save_raster, save_rgba_raster
+from ..terrain.result_writer import (
+    GEOPDF_DEM_NAME, save_geopdf_dem, save_raster, save_rgba_raster,
+)
 from ..terrain import contours, watershed
 from ..terrain.styles import write_catchment_qml, write_contour_qml, write_morizon_slope_qml
 
@@ -232,6 +234,28 @@ def create_terrain_package(specification, context):
             final_dem, final_gt, prepared.crs_wkt, data_dir, "dem", overwrite=True
         )
         output_members = {"dem": "data/dem.tif"}
+        # The DEM in the preview's CRS (the GeoPDF's), uncompressed, for apps
+        # that combine it with the GeoPDF. Not a layer; written out with the
+        # files. Without it the analysis is complete all the same.
+        preview_view = specification.get("preview_view") or {}
+        preview_crs_wkt = preview_view.get("crs_wkt")
+        if preview_crs_wkt:
+            try:
+                context.report("Writing the DEM for the GeoPDF...")
+                _write_geopdf_dem(
+                    prepared, preview_view, os.path.join(data_dir, "dem.tif"),
+                    os.path.join(data_dir, GEOPDF_DEM_NAME),
+                    os.path.join(temporary, "_work"),
+                    "gsi" if specification.get("geopdf_dem_japan") else "terrarium",
+                    context.check,
+                )
+                output_members["dem_geopdf"] = "data/" + GEOPDF_DEM_NAME
+            except (RuntimeError, OSError, ValueError, TerrainJobError) as error:
+                QgsMessageLog.logMessage(
+                    "The DEM for the GeoPDF could not be written: {}".format(error),
+                    "Quick Landscape Analysis Explorer", Qgis.MessageLevel.Warning,
+                )
+            context.check()
         if "hillshade" in requested:
             save_raster(
                 hillshade,
@@ -786,6 +810,58 @@ def _transform_geometry(geometry, source_wkt, destination_wkt):
         if result.Transform(transformation) != 0:
             raise TerrainJobError("The analysis area could not be transformed.")
     return result
+
+
+def _write_geopdf_dem(prepared, preview_view, dem_path, out_path, work_dir, fill, check):
+    """The DEM for use with the GeoPDF: the preview's area in its CRS.
+
+    The GeoPDF shows the preview, which is often wider than the analysis
+    frame (with a polygon area, the land around it). So the DEM is cut from
+    the whole DEM acquired for the analysis (not masked to the polygon) over
+    the preview's area; where nothing was acquired it has no data. Without a
+    preview extent, the analysis DEM in the preview's CRS. fill: "gsi" in
+    Japan, "terrarium" elsewhere: cells without a height get one from those
+    tiles (result_writer.save_geopdf_dem).
+    """
+
+    crs_wkt = preview_view["crs_wkt"]
+    extent = preview_view.get("extent")
+    if not extent or len(extent) != 4:
+        save_geopdf_dem(dem_path, out_path, crs_wkt, fill=fill, check=check)
+        return
+    xmin, ymin, xmax, ymax = (float(value) for value in extent)
+    ring = ogr.Geometry(ogr.wkbLinearRing)
+    for x, y in ((xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax), (xmin, ymin)):
+        ring.AddPoint_2D(x, y)
+    area = ogr.Geometry(ogr.wkbPolygon)
+    area.AddGeometry(ring)
+    area.Segmentize(max(xmax - xmin, ymax - ymin) / 20.0)
+    in_grid = _transform_geometry(area, crs_wkt, prepared.crs_wkt)
+    gxmin, gxmax, gymin, gymax = in_grid.GetEnvelope()
+    # The cells of the acquired DEM under the preview, with a margin.
+    inverse = gdal.InvGeoTransform(prepared.gt)
+    pixels = [gdal.ApplyGeoTransform(inverse, x, y) for x in (gxmin, gxmax) for y in (gymin, gymax)]
+    pad = 2 + 4  # resampling, and the margin added in the preview's CRS
+    rows, cols = prepared.data.shape
+    c0 = max(0, int(math.floor(min(p[0] for p in pixels))) - pad)
+    c1 = min(cols, int(math.ceil(max(p[0] for p in pixels))) + pad)
+    r0 = max(0, int(math.floor(min(p[1] for p in pixels))) - pad)
+    r1 = min(rows, int(math.ceil(max(p[1] for p in pixels))) + pad)
+    if c0 >= c1 or r0 >= r1:
+        # The preview is away from the acquired DEM: the analysis DEM only.
+        save_geopdf_dem(dem_path, out_path, crs_wkt, bounds=(xmin, ymin, xmax, ymax),
+                        cell=prepared.cell_size, fill=fill, check=check)
+        return
+    gt = prepared.gt
+    cut_gt = (gt[0] + c0 * gt[1] + r0 * gt[2], gt[1], gt[2],
+              gt[3] + c0 * gt[4] + r0 * gt[5], gt[4], gt[5])
+    os.makedirs(work_dir, exist_ok=True)
+    cut_path = save_raster(
+        prepared.data[r0:r1, c0:c1], cut_gt, prepared.crs_wkt, work_dir,
+        "dem_preview", overwrite=True,
+    )
+    save_geopdf_dem(cut_path, out_path, crs_wkt, bounds=(xmin, ymin, xmax, ymax),
+                    cell=prepared.cell_size, fill=fill, check=check)
 
 
 def _spatial_reference(wkt):

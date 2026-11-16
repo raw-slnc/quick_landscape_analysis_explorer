@@ -16,7 +16,7 @@ SLOPE_COLORS = (
 
 
 def write_morizon_slope_qml(path):
-    """Write the non-scoring appearance of Morizon Next's 災害リスク/傾斜."""
+    """Write the slope style in the colour classes of the original MORIZON."""
 
     items = (
         (20, "&lt;= 20", SLOPE_COLORS[0]),

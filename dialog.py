@@ -120,7 +120,10 @@ from .core import session
 from .management_panel import AnalysisManagementPanel
 from .order_arrows import LayerOrderArrows
 from .plugin import PLUGIN_NAME
-from .terrain import dem_sources, local_convert, remote_dem, watershed, world_country
+from .core.crs import gdal_wkt
+from .terrain import (
+    dem_sources, local_convert, remote_dem, result_writer, watershed, world_country,
+)
 from .terrain.styles import SLOPE_COLORS
 
 
@@ -848,8 +851,7 @@ class LandscapeExplorerDialog(QDialog):
         self.previewCanvas.setMapTool(self.previewPanTool)
         preview_layout.addWidget(self.previewFrame, 1)
 
-        # The centre snap's red cross (as in Kozu XML Integrator: see
-        # _centre_snap_event).
+        # The centre snap's red cross (see _centre_snap_event).
         self._snapMarker = QgsVertexMarker(self.previewCanvas)
         self._snapMarker.setIconType(QgsVertexMarker.IconType.ICON_CROSS)
         self._snapMarker.setColor(QColor(255, 0, 0, 255))
@@ -942,7 +944,7 @@ class LandscapeExplorerDialog(QDialog):
         layout.addWidget(preview_box, 1)
         self.exportBox = self._build_export_box()
         layout.addWidget(self.exportBox)
-        # The developer's name, as in Forestry Operations Lite (not translated).
+        # The developer's name (not translated).
         self.pluginCreditLabel = QLabel("Developed by Avid Tree Work", panel)
         self.pluginCreditLabel.setStyleSheet("color: #888; font-size: 8pt;")
         # Bottom left, away from the right panel's buttons; indented like the
@@ -2049,11 +2051,25 @@ class LandscapeExplorerDialog(QDialog):
             node.setExpanded(False)
             count += 1
         group.setExpanded(True)
+        preview_crs = self.previewCanvas.mapSettings().destinationCrs()
+        geopdf_dem = None
+        # Only analyses that have it in their ZIP (made with this version).
+        geopdf_member = (manifest.get("outputs") or {}).get("dem_geopdf")
+        if geopdf_member and written.get(geopdf_member):
+            try:
+                geopdf_dem = _fit_geopdf_dem(
+                    written[geopdf_member], preview_crs, self.previewCanvas.extent()
+                )
+            except (RuntimeError, OSError) as error:
+                QgsMessageLog.logMessage(
+                    "The DEM for the GeoPDF could not be written: {}".format(error),
+                    PLUGIN_NAME, Qgis.MessageLevel.Warning,
+                )
         _write_layout_record(folder, {
             "analysis_name": name,
             "landscape": bool(self._previewLandscape),
             "extent": _rectangle_values(self.previewCanvas.extent()),
-            "crs_wkt": self.previewCanvas.mapSettings().destinationCrs().toWkt(),
+            "crs_wkt": preview_crs.toWkt(),
             "description": _layout_description(manifest),
             "credits": _layout_credits(manifest, [], []),
             "summary": _safe_area_summary(package_path, manifest),
@@ -2071,6 +2087,13 @@ class LandscapeExplorerDialog(QDialog):
                 "{}個のレイヤーをレイヤーパネルのグループ「{}」に置きました。\n"
                 "これらは普通のレイヤーで、プラグインは消したり入れ替えたりしません。",
             ).format(folder, count, name)
+            + ("\n" + tr(
+                "{} is the DEM for use with the GeoPDF: in the preview's CRS ({}), "
+                "uncompressed, a little wider than the preview.",
+                "{} は、GeoPDFと組み合わせて使うDEMです（プレビューの座標系 {}、"
+                "非圧縮、プレビューより少し広い範囲）。",
+            ).format(os.path.basename(geopdf_dem), preview_crs.authid() or preview_crs.description())
+               if geopdf_dem else "")
         )
 
     def _print_layout_layers(self):
@@ -2563,7 +2586,7 @@ class LandscapeExplorerDialog(QDialog):
         ) <= (PREVIEW_CENTRE_SNAP_PX if reach is None else reach)
 
     def _centre_snap_event(self, event):
-        """The centre snap, as in Kozu XML Integrator.
+        """The centre snap.
 
         A red cross appears at the mouse within PREVIEW_CENTRE_CROSS_PX of
         the preview's centre and, within PREVIEW_CENTRE_SNAP_PX, jumps to the
@@ -2863,6 +2886,11 @@ class LandscapeExplorerDialog(QDialog):
         index = self.demSourceCombo.findData(key, Qt.ItemDataRole.UserRole)
         if index >= 0:
             self.demSourceCombo.setCurrentIndex(index)
+
+    def _preview_in_japan(self):
+        """Whether the preview comes near Japan (QGIS's world map)."""
+        bbox84 = self._preview_bbox84()
+        return bbox84 is not None and world_country.touches_country("JP", bbox84) is True
 
     def _preview_bbox84(self):
         extent = self.previewCanvas.extent()
@@ -5024,6 +5052,10 @@ class LandscapeExplorerDialog(QDialog):
             # The view the user saw when running, including the surroundings.
             # Analysis management shows exactly this view again.
             "preview_view": self._current_preview_view(),
+            # The DEM for the GeoPDF gets heights in every cell from GSI data
+            # (terrain/dem_gaps.py) when the preview is in Japan. Told here:
+            # the world map is read in this thread.
+            "geopdf_dem_japan": self._preview_in_japan(),
             # Polygons: no WKT yet; the job combines the parts first.
             "aoi_wkt": area_wkt,
             "aoi_parts_wkb": area_parts,
@@ -5035,7 +5067,7 @@ class LandscapeExplorerDialog(QDialog):
                 area_box.xMinimum(), area_box.yMinimum(),
                 area_box.xMaximum(), area_box.yMaximum(),
             ],
-            "aoi_crs_wkt": crs.toWkt(),
+            "aoi_crs_wkt": gdal_wkt(crs),
         }
 
     def _current_preview_view(self):
@@ -5050,7 +5082,7 @@ class LandscapeExplorerDialog(QDialog):
                 extent.xMaximum(),
                 extent.yMaximum(),
             ],
-            "crs_wkt": crs.toWkt(),
+            "crs_wkt": gdal_wkt(crs),
             "orientation": "landscape" if self._previewLandscape else "portrait",
         }
 
@@ -5386,7 +5418,7 @@ class LandscapeExplorerDialog(QDialog):
             return layer
 
         # Top to bottom. Slope is a terrain derivative (only its colours come
-        # from Morizon Next), so it belongs here, not under a risk group.
+        # from the original MORIZON), so it belongs here, not under a risk group.
         # Hillshade is multiplied, so its position barely matters; the opaque
         # DEM goes last where it does not cover the others.
         def add_vector(member_key, style_key, name):
@@ -5424,8 +5456,7 @@ class LandscapeExplorerDialog(QDialog):
         """Return attention to the analysis window when a result is ready.
 
         The window is deliberately not always-on-top: users can place it behind
-        QGIS while working on the map. Analysis completion brings it back once,
-        following the Morizon Next interaction pattern.
+        QGIS while working on the map. Analysis completion brings it back once.
         """
         if self.isMinimized():
             self.showNormal()
@@ -5825,7 +5856,7 @@ def _valid_footprint_wkt(valid, gt, scale_x, scale_y, crs_wkt):
 
 
 # Within this distance (pixels) of the preview centre the snap marker jumps
-# to the centre and the wheel zooms about it (as in Kozu XML Integrator).
+# to the centre and the wheel zooms about it.
 PREVIEW_CENTRE_SNAP_PX = 15
 # The red cross shows only within this distance of the centre.
 PREVIEW_CENTRE_CROSS_PX = 45
@@ -6989,6 +7020,29 @@ def _layer_member(layer, package_path):
     prefix = packages.vsi_path(package_path, "")
     source = layer.source().split("|", 1)[0].replace("\\", "/")
     return source[len(prefix):].lstrip("/") if source.startswith(prefix.rstrip("/")) else ""
+
+
+def _fit_geopdf_dem(path, crs, extent=None):
+    """The DEM for the GeoPDF written out of the ZIP (``path``), fitted to
+    the preview; its path.
+
+    The analysis wrote it over the preview at run time, in the preview's
+    CRS, and analysis management shows that same view, so it is kept as it
+    is. Only when the project's CRS (the preview's) has changed since is it
+    warped to the new CRS over the preview (no network here: no new GSI
+    data, the cells come from the DEM in the ZIP).
+    """
+
+    crs_wkt = gdal_wkt(crs)
+    bounds = None
+    if extent is not None and not extent.isEmpty():
+        bounds = (extent.xMinimum(), extent.yMinimum(), extent.xMaximum(), extent.yMaximum())
+    if result_writer.covers(path, crs_wkt, bounds):
+        return path
+    rewritten = path + ".new.tif"
+    result_writer.save_geopdf_dem(path, rewritten, crs_wkt, bounds=bounds)
+    os.replace(rewritten, path)
+    return path
 
 
 def _extract_analysis_files(package_path, manifest, folder):

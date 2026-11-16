@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# Adapted from Forestry Operations Lite (same author).
 """zip全体をダウンロードせず、central directory と個別エントリだけを
 HTTP Range リクエストで読み込むための汎用ユーティリティ。
 
