@@ -21,6 +21,8 @@ import urllib.request
 
 import numpy as np
 
+from . import sources
+
 _USER_AGENT = "Quick Landscape Analysis Explorer (QGIS plugin)"
 
 _AHN_WCS = ("https://service.pdok.nl/rws/ahn/wcs/v1_0?service=WCS&request=GetCoverage"
@@ -36,13 +38,14 @@ _NZ_BASE = "https://nz-elevation.s3.ap-southeast-2.amazonaws.com/new-zealand/new
 _RLP_DGM1 = "https://www.geobasis-rlp.de/data/dgm1/current/tif/"
 _BY_DGM1 = "https://download1.bayernwolke.de/a/dgm/dgm1/"
 
-# Source key -> how to fetch it.
+# Source key -> how to fetch it. The words (dataset name, provider, licence,
+# credit, service) come from the country files (terrain/sources/).
 REMOTE_SOURCES = {
     "ahn_dtm": dict(
         kind="ogc", url=_AHN_WCS, layer="dtm_05m", epsg=28992, cell=0.5, chunk_px=1000,
-        label="AHN4 DTM 0.5m", prefix="ahn_dtm",
-        provider="Rijkswaterstaat / PDOK", licence="CC0",
-        service="https://service.pdok.nl/rws/ahn/wcs/v1_0",
+        prefix="ahn_dtm",
+        # The coverage's extent (DescribeCoverage of dtm_05m), in RD New.
+        extent=(10000.0, 306250.0, 280000.0, 618750.0),
     ),
     "ign_mnt": dict(
         kind="ogc", url=_IGN_WMSR,
@@ -50,42 +53,20 @@ REMOTE_SOURCES = {
         epsg=2154, cell=0.5, chunk_px=2000,
         # WMS-R serves any image size: one coarse look first (see _probe_ogc).
         probe_px=512,
-        label="IGN LiDAR HD MNT 0.5m", prefix="ign_lidarhd_mnt",
-        provider="IGN (Institut national de l'information géographique et forestière)",
-        licence="Licence Ouverte / Open Licence (Etalab 2.0)",
-        service="https://data.geopf.fr/wms-r/wms",
+        prefix="ign_lidarhd_mnt",
     ),
-    "linz_dem": dict(
-        kind="nzcog", epsg=2193, cell=1.0,
-        label="LINZ NZ DEM 1m", prefix="linz_dem",
-        provider="Toitū Te Whenua Land Information New Zealand and the survey licensors",
-        licence="CC BY 4.0",
-        service=_NZ_BASE,
-    ),
-    "rlp_dgm1": dict(
-        kind="de_tiles", state="rlp", epsg=25832, cell=1.0,
-        label="Rhineland-Palatinate DGM1 1m", prefix="rlp_dgm1",
-        provider="GeoBasis-RLP (Landesamt für Vermessung und Geobasisinformation Rheinland-Pfalz)",
-        licence="dl-de/by-2-0",
-        # The form LVermGeo RLP asks for (lvermgeo.rlp.de, Open Data); the
-        # year is the year the data was obtained. The plugin changes the data
-        # (clipped, regridded, derived maps), so "[Daten bearbeitet]".
-        credit="©GeoBasis-DE / LVermGeoRP {year}, dl-de/by-2-0, www.lvermgeo.rlp.de "
-               "[Daten bearbeitet]",
-        service=_RLP_DGM1,
-    ),
-    "by_dgm1": dict(
-        kind="de_tiles", state="by", epsg=25832, cell=1.0,
-        label="Bavaria DGM1 1m", prefix="by_dgm1",
-        provider="Bayerische Vermessungsverwaltung (geodaten.bayern.de)",
-        licence="CC BY 4.0",
-        # The form of the Bavarian terms of use, with the licence and the
-        # statement that the data was changed, which the terms ask for.
-        credit="Bayerische Vermessungsverwaltung – www.geodaten.bayern.de, CC BY 4.0 "
-               "(Daten verändert)",
-        service=_BY_DGM1,
-    ),
+    "linz_dem": dict(kind="nzcog", epsg=2193, cell=1.0, prefix="linz_dem"),
+    "rlp_dgm1": dict(kind="de_tiles", state="rlp", epsg=25832, cell=1.0, prefix="rlp_dgm1"),
+    "by_dgm1": dict(kind="de_tiles", state="by", epsg=25832, cell=1.0, prefix="by_dgm1"),
 }
+for _key, _spec in REMOTE_SOURCES.items():
+    _facts = sources.get(_key)["facts"]
+    _spec.update(label=_facts["dataset"], provider=_facts["provider"],
+                 licence=_facts["licence"], service=_facts["service"])
+    if "credit" in _facts:
+        _spec["credit"] = _facts["credit"]
+    if "survey_years" in _facts:
+        _spec["survey_years"] = list(_facts["survey_years"])
 
 LERC_MISSING_MESSAGE = (
     "This QGIS's GDAL cannot read LERC-compressed GeoTIFFs, which the LINZ data uses. "
@@ -231,52 +212,78 @@ def _probe_ogc(ctx, spec, bbox, parts_dir):
     return empty
 
 
-def _fetch_ogc(ctx, spec, bbox, out_dir):
-    """Query WCS / WMS in chunks and combine them into one GeoTIFF."""
+def _fetch_ogc(ctx, spec, bbox, out_dir, store=None, kept=None):
+    """Query WCS / WMS in chunks and combine them into one GeoTIFF.
+
+    The chunks lie on a fixed grid in the source's CRS (chunk_px cells
+    square, counted from 0), so the same place gives the same chunks and
+    ``store`` (core/dem_store.TileStore) can keep them for later analyses.
+    ``kept`` ({chunk code: [None]}): only these kept chunks are used and
+    nothing is fetched (the QLAE folder).
+    """
     cell = spec["cell"]
     check_size(bbox, cell)
     x0, y0, x1, y1 = snap_bbox(bbox, cell)
     step = spec["chunk_px"] * cell
-    xs = []
-    x = x0
-    while x < x1 - 1e-9:
-        xs.append((x, min(x + step, x1)))
-        x += step
-    ys = []
-    y = y0
-    while y < y1 - 1e-9:
-        ys.append((y, min(y + step, y1)))
-        y += step
+    columns = range(int(math.floor(x0 / step)), int(math.ceil(x1 / step)))
+    rows = range(int(math.floor(y0 / step)), int(math.ceil(y1 / step)))
     parts_dir = os.path.join(out_dir, f"parts_{spec['prefix']}")
     os.makedirs(parts_dir, exist_ok=True)
     empty = None
-    if spec.get("probe_px"):
+    if spec.get("probe_px") and kept is None:
         empty = _probe_ogc(ctx, spec, (x0, y0, x1, y1), parts_dir)
     paths = []
-    skipped = False
-    n = len(xs) * len(ys)
+    n = len(columns) * len(rows)
     k = 0
-    for cy0, cy1 in ys:
-        for cx0, cx1 in xs:
+    for row in rows:
+        for column in columns:
             ctx.check()
             k += 1
-            if empty is not None and empty(cx0, cy0, cx1, cy1):
-                skipped = True
+            cx0, cx1 = column * step, (column + 1) * step
+            cy0, cy1 = row * step, (row + 1) * step
+            code = "{}_{}".format(column, row)
+            kept_path = store.find(spec["prefix"], None, code) if store is not None else None
+            if kept_path is not None:
+                store.reused += 1
+                paths.append(kept_path)
                 continue
+            if kept is not None:
+                continue
+            if empty is not None and empty(cx0, cy0, cx1, cy1):
+                continue
+            limits = spec.get("extent")
+            if limits:
+                # Only within the coverage's own extent: AHN's WCS refuses a
+                # request reaching past it (400, ExtentError), as at the
+                # southern tip of the Netherlands. The rest is left NoData.
+                cx0, cy0 = max(cx0, limits[0]), max(cy0, limits[1])
+                cx1, cy1 = min(cx1, limits[2]), min(cy1, limits[3])
+                if cx0 >= cx1 or cy0 >= cy1:
+                    continue
             ctx.report(f"Fetching {spec['label']}… {k}/{n}")
             url = spec["url"].format(
                 layer=spec["layer"], x0=cx0, y0=cy0, x1=cx1, y1=cy1,
                 w=int(round((cx1 - cx0) / cell)), h=int(round((cy1 - cy0) / cell)))
-            dest = os.path.join(parts_dir, f"part_{k:04d}.tif")
-            _http_download(ctx, url, dest)
+            if store is None:
+                dest = os.path.join(parts_dir, f"part_{k:04d}.tif")
+                _http_download(ctx, url, dest)
+            else:
+                # Downloaded on the store's disk, then moved in whole.
+                incoming = store.incoming()
+                try:
+                    part = os.path.join(incoming, code + ".tif")
+                    _http_download(ctx, url, part)
+                    dest = store.keep(spec["prefix"], None, code, part)
+                    store.downloaded += 1
+                finally:
+                    store.drop_incoming(incoming)
             paths.append(dest)
     if not paths:
         raise RemoteDemError("No elevation data for this area (outside the source coverage).")
     ctx.report("Combining…")
-    # With chunks left out, keep the whole area (the gaps become NoData).
+    # Cut to the area asked for (the chunks reach past it); the gaps NoData.
     return _finish_mosaic(
-        ctx, paths, out_dir, spec["prefix"], spec["epsg"],
-        bbox=(x0, y0, x1, y1) if skipped else None,
+        ctx, paths, out_dir, spec["prefix"], spec["epsg"], bbox=(x0, y0, x1, y1),
     )
 
 
@@ -343,6 +350,7 @@ def _fetch_nzcog(ctx, spec, bbox, out_dir):
     wanted = _nz_tile_names(bbox)
     available = _nz_available_tiles(ctx)
     tiles = [n for n in wanted if n in available]
+    ctx.coverage_names = sorted(available)  # the whole list, for the coverage mesh
     if not tiles:
         raise RemoteDemError("No elevation data for this area (outside the source coverage).")
     ctx.check()
@@ -408,7 +416,7 @@ def _tile_coverage(path):
     return float(valid.mean()) if arr.size else 0.0
 
 
-def _normalised_tile(path, epsg, cell):
+def _normalised_tile(path, epsg, cell, vrt_path):
     """The tile as a VRT on one grid: CRS, cell edges and NoData made the same.
 
     The tiles of one state differ by year: RLP's 2022 tiles are 1001 × 1001
@@ -420,7 +428,6 @@ def _normalised_tile(path, epsg, cell):
     source = gdal.Open(path)
     nodata = source.GetRasterBand(1).GetNoDataValue() if source is not None else None
     source = None
-    vrt_path = os.path.splitext(path)[0] + "_grid.vrt"
     out = gdal.Warp(
         vrt_path, path, format="VRT",
         srcSRS=f"EPSG:{epsg}", dstSRS=f"EPSG:{epsg}",
@@ -434,14 +441,28 @@ def _normalised_tile(path, epsg, cell):
     return vrt_path
 
 
-def _fetch_de_tiles(ctx, spec, bbox, out_dir):
-    """Download the German state's 1 km DGM1 tiles and combine them."""
+def _fetch_de_tiles(ctx, spec, bbox, out_dir, store=None, kept=None):
+    """Download the German state's 1 km DGM1 tiles and combine them.
+
+    With ``store``, a tile kept from an earlier analysis is used instead of
+    downloading it: for Rhineland-Palatinate by its survey year (the file
+    list is still read each time, so a newer survey is fetched); Bavaria's
+    tiles have no year."""
     cell = spec["cell"]
     check_size(bbox, cell)
     bbox = snap_bbox(bbox, cell)
     keys = _de_tile_keys(bbox)
-    if spec["state"] == "rlp":
+    listed = None
+    if kept is not None:
+        # The QLAE folder: the kept tiles and their years only.
+        wanted = {key: kept["{}_{}".format(*key)] for key in keys if "{}_{}".format(*key) in kept}
+
+        def urls(key):
+            # Not fetched: only names for the work files, one per year.
+            return ["kept/{}_{}_{}.tif".format(key[0], key[1], year) for year in wanted[key]]
+    elif spec["state"] == "rlp":
         years = _rlp_years(ctx)
+        listed = list(years)  # the whole state's tiles, for the coverage mesh
         wanted = {key: years[key] for key in keys if key in years}
 
         def urls(key):
@@ -459,23 +480,44 @@ def _fetch_de_tiles(ctx, spec, bbox, out_dir):
     os.makedirs(parts_dir, exist_ok=True)
     layered = []  # (priority, vrt path): the newest survey drawn last, on top
     survey_years = set()
+    found = set()  # tiles that exist (fetched or kept), for the coverage mesh
     total = len(wanted)
     for index, key in enumerate(sorted(wanted), start=1):
         ctx.check()
         ctx.report(f"Fetching {spec['label']}… {index}/{total}")
         # The newest survey first; older ones only fill what it leaves empty.
         for rank, url in enumerate(urls(key)):
-            dest = os.path.join(parts_dir, url.rsplit("/", 1)[1])
-            try:
-                _http_download(ctx, url, dest)
-            except urllib.error.HTTPError as error:
-                if error.code == 404:
-                    # No such file (outside the state, or a year the list
-                    # names but the server does not have): try the next
-                    # older survey of this tile, if any.
-                    continue
-                raise
-            layered.append((rank, _normalised_tile(dest, spec["epsg"], cell)))
+            name = url.rsplit("/", 1)[1]
+            code = "{}_{}".format(*key)
+            year = wanted[key][rank]
+            dest = store.find(spec["prefix"], year, code) if store is not None else None
+            if dest is not None:
+                store.reused += 1
+            elif kept is not None:
+                continue
+            else:
+                # Downloaded on the store's disk, then moved in whole.
+                incoming = store.incoming() if store is not None else parts_dir
+                try:
+                    dest = os.path.join(incoming, name)
+                    try:
+                        _http_download(ctx, url, dest)
+                    except urllib.error.HTTPError as error:
+                        if error.code == 404:
+                            # No such file (outside the state, or a year the
+                            # list names but the server does not have): try
+                            # the next older survey of this tile, if any.
+                            continue
+                        raise
+                    if store is not None:
+                        dest = store.keep(spec["prefix"], year, code, dest)
+                        store.downloaded += 1
+                finally:
+                    if store is not None:
+                        store.drop_incoming(incoming)
+            found.add(key)
+            vrt = os.path.join(parts_dir, os.path.splitext(name)[0] + "_grid.vrt")
+            layered.append((rank, _normalised_tile(dest, spec["epsg"], cell, vrt)))
             if wanted[key][rank] is not None:
                 survey_years.add(wanted[key][rank])
             if _tile_coverage(dest) >= 0.999:
@@ -489,20 +531,28 @@ def _fetch_de_tiles(ctx, spec, bbox, out_dir):
     info = {"credit": spec["credit"].format(year=datetime.date.today().year)}
     if survey_years:  # Rhineland-Palatinate: the survey years in the file names
         info["survey_years"] = sorted(survey_years)
+    # For terrain/coverage.py (taken out before the facts are recorded).
+    if listed is not None:
+        info["_coverage_list"] = listed
+    info["_coverage_found"] = sorted(found)
     return path, info
 
 
-def fetch_remote_dem(ctx, key, bbox, out_dir):
+def fetch_remote_dem(ctx, key, bbox, out_dir, store=None, kept=None):
     """Fetch an overseas DEM for bbox (in the source CRS).
 
     Returns (GeoTIFF path, extra source facts for the analysis record): the
     German states give their required credit line and, for
     Rhineland-Palatinate, the survey years used; the others give none.
+    ``store`` (core/dem_store.TileStore) keeps the German tiles for reuse.
+    ``kept`` ({tile code: [year, ...]}, terrain/kept_tiles.codes): only
+    these kept tiles are used and nothing is fetched (the QLAE folder).
     """
     spec = REMOTE_SOURCES[key]
     os.makedirs(out_dir, exist_ok=True)
     if spec["kind"] == "nzcog":
-        return _fetch_nzcog(ctx, spec, bbox, out_dir), {}
+        path = _fetch_nzcog(ctx, spec, bbox, out_dir)
+        return path, {"_coverage_names": getattr(ctx, "coverage_names", None) or []}
     if spec["kind"] == "de_tiles":
-        return _fetch_de_tiles(ctx, spec, bbox, out_dir)
-    return _fetch_ogc(ctx, spec, bbox, out_dir), {}
+        return _fetch_de_tiles(ctx, spec, bbox, out_dir, store, kept)
+    return _fetch_ogc(ctx, spec, bbox, out_dir, store, kept), {}

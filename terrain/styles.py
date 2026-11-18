@@ -19,31 +19,51 @@ def write_morizon_slope_qml(path):
     """Write the slope style in the colour classes of the original MORIZON."""
 
     items = (
-        (20, "&lt;= 20", SLOPE_COLORS[0]),
+        (20, "<= 20", SLOPE_COLORS[0]),
         (25, "20 - 25", SLOPE_COLORS[1]),
         (30, "25 - 30", SLOPE_COLORS[2]),
         (35, "30 - 35", SLOPE_COLORS[3]),
         (40, "35 - 40", SLOPE_COLORS[4]),
         (45, "40 - 45", SLOPE_COLORS[5]),
-        ("inf", "&gt; 45", SLOPE_COLORS[6]),
+        ("inf", "> 45", SLOPE_COLORS[6]),
     )
+    return write_discrete_qml(path, items, opacity=0.65, minimum=0, maximum=90)
+
+
+def write_discrete_qml(path, items, opacity=1.0, minimum=None, maximum=None, multiply=False):
+    """A single-band raster style in classes: ``items`` are (upper value or
+    "inf", label, "#rrggbb"), lowest first; a cell takes the colour of the
+    first class whose upper value it does not pass. ``multiply``: drawn
+    multiplied over the layers below (white leaves them as they are)."""
+    from html import escape
+
+    def quoteattr(text):
+        # An XML attribute value in double quotes (as xml.sax.saxutils's).
+        return '"{}"'.format(escape(str(text), quote=True))
+
+    numbers = [float(value) for value, _label, _color in items if value != "inf"]
+    minimum = numbers[0] if minimum is None else minimum
+    maximum = numbers[-1] if maximum is None else maximum
     item_xml = "\n".join(
-        '          <item color="{}" label="{}" value="{}" alpha="255"/>'.format(
-            color, label, value
+        '          <item color={} label={} value={} alpha="255"/>'.format(
+            quoteattr(color), quoteattr(label), quoteattr(str(value))
         )
         for value, label, color in items
     )
     qml = """<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
 <qgis version="3.34" styleCategories="AllStyleCategories">
   <pipe>
-    <rasterrenderer alphaBand="-1" band="1" type="singlebandpseudocolor" opacity="0.65" classificationMin="0" classificationMax="90">
+    <rasterrenderer alphaBand="-1" band="1" type="singlebandpseudocolor" opacity="{opacity}" classificationMin="{minimum}" classificationMax="{maximum}">
       <rasterTransparency/>
       <minMaxOrigin>
-        <limits>MinMax</limits><extent>WholeRaster</extent><statAccuracy>Estimated</statAccuracy>
+        <!-- Limits "None" (user defined): with "MinMax", applying the layer's
+             properties in QGIS measured the data again and replaced the
+             classes by its default five. -->
+        <limits>None</limits><extent>WholeRaster</extent><statAccuracy>Estimated</statAccuracy>
         <cumulativeCutLower>0.02</cumulativeCutLower><cumulativeCutUpper>0.98</cumulativeCutUpper><stdDevFactor>2</stdDevFactor>
       </minMaxOrigin>
       <rastershader>
-        <colorrampshader labelPrecision="4" colorRampType="DISCRETE" classificationMode="1" maximumValue="90" minimumValue="0" clip="0">
+        <colorrampshader labelPrecision="4" colorRampType="DISCRETE" classificationMode="1" maximumValue="{maximum}" minimumValue="{minimum}" clip="0">
 {items}
         </colorrampshader>
       </rastershader>
@@ -53,9 +73,10 @@ def write_morizon_slope_qml(path):
     <rasterresampler maxOversampling="2"/>
     <resamplingStage>resamplingFilter</resamplingStage>
   </pipe>
-  <blendMode>0</blendMode>
+  <blendMode>{blend}</blendMode>
 </qgis>
-""".format(items=item_xml)
+""".format(items=item_xml, opacity=opacity, minimum=minimum, maximum=maximum,
+           blend=6 if multiply else 0)
     Path(path).write_text(qml, encoding="utf-8")
     return str(path)
 

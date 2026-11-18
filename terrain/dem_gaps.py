@@ -14,13 +14,16 @@ cells without a height are sorted out and given one:
 - land (gaps in the survey, the land beyond the fetched DEM): GSI DEM5A,
   then DEM10B, stretched to the grid
 - lakes and rivers: interpolated from their banks (a level surface)
-- anything left: interpolated from around it
 
 Outside Japan, where there are no GSI data, AWS Terrain Tiles (Mapzen
 Terrarium, worldwide, a few metres to tens of metres) are used instead:
 small holes from around them, the rest from Terrarium as it is (below
 0 m: the sea floor, or land below sea level); anything left from around
 it.
+
+When land is left without a height because its tiles could not be read
+(no network) or would be too many, FillIncomplete is raised and the DEM
+is not made: stretching the edge values over it would make up heights.
 
 The sea and water get heights too: this DEM is for looking at, not for
 analysis.
@@ -55,6 +58,17 @@ MAX_TILES = 200
 TILE_SIZE = 256
 WEB_MERCATOR_LIMIT = 20037508.3428
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; QGIS plugin)"}
+
+
+class FillIncomplete(Exception):
+    """The land without a height could not be given one: ``reason`` is
+    "network" (tiles could not be read) or "too_wide" (more tiles than
+    MAX_TILES). Its edge values are not stretched over it instead: those
+    would be made-up heights over the sea and the land alike."""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
 
 
 def fill_for_3d(path, check=None, source="gsi"):
@@ -295,12 +309,14 @@ def _fill(data, grid, check):
             unknown &= ~done
 
     # Land: DEM5A, then DEM10B; where DEM10B has no height either, the sea.
+    any_unread = False
     for index, source in enumerate(COARSE_SOURCES):
         if not unknown.any():
             break
         values, unread = _coarse_on_grid(source, unknown, grid, check)
         if values is None:
-            break
+            raise FillIncomplete("too_wide")
+        any_unread = any_unread or bool(unread.any())
         done = unknown & ~np.isnan(values)
         data[done] = values[done]
         counts["dem5a" if index == 0 else "dem10b"] = int(done.sum())
@@ -308,12 +324,15 @@ def _fill(data, grid, check):
         if index == len(COARSE_SOURCES) - 1:
             sea |= unknown & np.isnan(values) & ~unread
             unknown &= ~sea
+    if unknown.any():
+        # Only cells under tiles that could not be read are left.
+        raise FillIncomplete("network" if any_unread else "too_wide")
 
     data[sea] = 0.0
     counts["sea"] = int(sea.sum())
 
-    # Lakes and rivers, then anything left: from around them.
-    for key, cells in (("water", lake_river), ("interpolated_rest", unknown)):
+    # Lakes and rivers: from their banks.
+    for key, cells in (("water", lake_river),):
         if cells.any():
             filled = _fill_from_neighbors(data, max(data.shape))
             done = cells & ~np.isnan(filled)
@@ -348,14 +367,18 @@ def _fill_terrarium(data, grid, check):
         zoom = TERRARIUM_MAX_ZOOM
         while zoom > TERRARIUM_MIN_ZOOM and _tile_count(_tile_range(bounds, zoom)) > MAX_TILES:
             zoom -= 1
-        values, _unread = _coarse_on_grid((TERRARIUM_URL, zoom, "terrarium"), unknown, grid, check)
-        if values is not None:
-            done = unknown & ~np.isnan(values)
-            data[done] = values[done]
-            counts["terrarium"] = int(done.sum())
-            unknown &= ~done
+        values, unread = _coarse_on_grid((TERRARIUM_URL, zoom, "terrarium"), unknown, grid, check)
+        if values is None:
+            raise FillIncomplete("too_wide")
+        done = unknown & ~np.isnan(values)
+        data[done] = values[done]
+        counts["terrarium"] = int(done.sum())
+        unknown &= ~done
+        if (unknown & unread).any():
+            raise FillIncomplete("network")
 
     if unknown.any():
+        # Terrarium covers the earth: a few cells at most (its own gaps).
         filled = _fill_from_neighbors(data, max(data.shape))
         done = unknown & ~np.isnan(filled)
         data[done] = filled[done]

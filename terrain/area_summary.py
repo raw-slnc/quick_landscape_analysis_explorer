@@ -88,6 +88,77 @@ def _largest_catchments(package_path, member):
     return areas[:LARGEST_CATCHMENTS]
 
 
+def _area_mask(package_path, manifest, gt, shape, projection):
+    """The analysis area (area/aoi.wkt of the package) on a raster's grid, as
+    a boolean array; None when it cannot be made."""
+    import zipfile
+
+    from osgeo import osr
+
+    area = manifest.get("area") or {}
+    try:
+        with zipfile.ZipFile(package_path) as package:
+            wkt = package.read(area.get("geometry") or "area/aoi.wkt").decode("utf-8")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return None
+    geometry = ogr.CreateGeometryFromWkt(wkt)
+    if geometry is None or not area.get("crs_wkt") or not projection:
+        return None
+    source, target = osr.SpatialReference(), osr.SpatialReference()
+    source.ImportFromWkt(area["crs_wkt"])
+    target.ImportFromWkt(projection)
+    for srs in (source, target):
+        srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    geometry.Transform(osr.CoordinateTransformation(source, target))
+    raster = gdal.GetDriverByName("MEM").Create("", shape[1], shape[0], 1, gdal.GDT_Byte)
+    raster.SetGeoTransform(gt)
+    raster.SetProjection(projection)
+    vectors = ogr.GetDriverByName("Memory").CreateDataSource("")
+    layer = vectors.CreateLayer("area", target, ogr.wkbUnknown)
+    feature = ogr.Feature(layer.GetLayerDefn())
+    feature.SetGeometry(geometry)
+    layer.CreateFeature(feature)
+    gdal.RasterizeLayer(raster, [1], layer, burn_values=[1])
+    mask = raster.GetRasterBand(1).ReadAsArray() == 1
+    raster = layer = vectors = None
+    return mask
+
+
+def slope_classes(raster_path, items, package_path=None, manifest=None):
+    """The areas of a slope raster in the classes of its own style (the map's
+    classes): ``items`` are (upper value, label, colour), lowest first, the
+    last upper value infinite. Counted within the analysis area when the
+    package is known (the regional slope has values under trees and past
+    it), else over the raster's values. (classes, mean slope), or None."""
+    dataset = gdal.Open(raster_path)
+    if dataset is None:
+        return None
+    projection = dataset.GetProjection()
+    dataset = None
+    slope, gt = _read(raster_path)
+    if slope is None:
+        return None
+    mask = np.isfinite(slope)
+    if package_path and manifest:
+        area = _area_mask(package_path, manifest, gt, slope.shape, projection)
+        if area is not None:
+            mask &= area
+    values = slope[mask]
+    cell_area = abs(gt[1] * gt[5])
+    classes = []
+    lower = -np.inf
+    for upper, label, color in items:
+        cells = int(np.count_nonzero((values > lower) & (values <= upper)))
+        classes.append({
+            "label": label,
+            "color": color,
+            "area_ha": cells * cell_area / 10000.0,
+            "percent": 100.0 * cells / max(1, values.size),
+        })
+        lower = upper
+    return classes, (float(values.mean()) if values.size else float("nan"))
+
+
 def area_summary(package_path, manifest):
     """Return a dict of numbers, or None when the DEM cannot be read."""
 

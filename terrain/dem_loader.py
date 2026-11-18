@@ -412,6 +412,8 @@ class GSITileDEMLoader:
         self.cell_size = None
         self.nodata = None
         self._ds = None   # DEMLoader 互換ダミー
+        # 取得したタイルを残して使い回す場所（core/dem_store.TileStore）。None なら残さない。
+        self.tile_store = None
 
     # ── タイル座標変換 ────────────────────────────────────────────────
 
@@ -437,8 +439,15 @@ class GSITileDEMLoader:
         """URL の PNG タイルを取得し (256, 256) の標高 numpy 配列を返す。
         encoding: "gsi" = 国土地理院形式, "terrarium" = Mapzen/AWS Terrarium 形式
         失敗時は (None, エラー文字列) を返す。"""
+        raw, err = GSITileDEMLoader._download_tile_bytes(url)
+        if raw is None:
+            return None, err
+        return GSITileDEMLoader._decode_tile(raw, encoding)
+
+    @staticmethod
+    def _download_tile_bytes(url):
+        """PNG タイルのバイト列を取得する。失敗時は (None, エラー文字列)。"""
         import urllib.request
-        from qgis.PyQt.QtGui import QImage
 
         if not url.startswith(("https://", "http://")):
             return None, f"Invalid URL scheme: {url}"
@@ -448,9 +457,21 @@ class GSITileDEMLoader:
                 headers={"User-Agent": "Mozilla/5.0 (compatible; QGIS plugin)"},
             )
             with urllib.request.urlopen(req, timeout=15) as resp:  # nosec B310
-                raw = resp.read()
+                return resp.read(), None
         except Exception as e:
             return None, f"Connection error: {e}"
+
+    @staticmethod
+    def _store_name(tile_url):
+        """保存場所（core/dem_store.py）でのタイルの種類名。"""
+        if "/xyz/" in tile_url:  # 国土地理院: .../xyz/dem5a_png/{z}/...
+            return "gsi_" + tile_url.split("/xyz/", 1)[1].split("/", 1)[0].replace("_png", "")
+        return "terrarium"
+
+    @staticmethod
+    def _decode_tile(raw, encoding="gsi"):
+        """PNG のバイト列を (256, 256) の標高配列にする。失敗時は (None, エラー文字列)。"""
+        from qgis.PyQt.QtGui import QImage
 
         try:
             img = QImage()
@@ -589,7 +610,7 @@ class GSITileDEMLoader:
                 if cancel_cb is not None and cancel_cb():
                     return None  # キャンセル
                 url = tile_url.format(z=zoom, x=tx, y=ty)
-                tile, err = self._fetch_tile_array(url, encoding)
+                tile, err = self._stored_or_fetched(tile_url, url, zoom, tx, ty, encoding)
                 if tile is not None:
                     total_arr[iy * TS:(iy + 1) * TS,
                               ix * TS:(ix + 1) * TS] = tile
@@ -601,6 +622,36 @@ class GSITileDEMLoader:
                     progress_cb(iy * nx + ix + 1, n_total)
 
         return (total_arr, zoom, x0, y0)
+
+    def _stored_or_fetched(self, tile_url, url, zoom, tx, ty, encoding):
+        """tile_store（core/dem_store.TileStore）があれば、残してあるタイルを使い、
+        無ければ取得して残す。取れなかったタイル（海など）は残さない。"""
+        store = getattr(self, "tile_store", None)
+        if store is None:
+            return self._fetch_tile_array(url, encoding)
+        name = self._store_name(tile_url)
+        code = f"{tx}_{ty}"
+        kept = store.find(name, zoom, code, ext=".png")
+        if kept is not None:
+            try:
+                with open(kept, "rb") as fh:
+                    tile, err = self._decode_tile(fh.read(), encoding)
+                if tile is not None:
+                    store.reused += 1
+                    return tile, None
+            except OSError:
+                pass  # 読めなければ取得し直す
+        if getattr(self, "offline", False):
+            # QLAEフォルダ：残してあるタイルだけを使い、取得しない
+            return None, None
+        raw, err = self._download_tile_bytes(url)
+        if raw is None:
+            return None, err
+        tile, err = self._decode_tile(raw, encoding)
+        if tile is not None:
+            store.keep_bytes(name, zoom, code, raw, ext=".png")
+            store.downloaded += 1
+        return tile, err
 
     # ── DEMLoader 互換メソッド ────────────────────────────────────────
 

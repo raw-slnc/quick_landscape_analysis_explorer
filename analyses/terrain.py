@@ -3,11 +3,13 @@
 
 import contextlib
 import datetime
+import errno
 import json
 import math
 import os
 import shutil
 import tempfile
+import threading
 import traceback
 import uuid
 import zipfile
@@ -17,11 +19,15 @@ from osgeo import gdal, ogr, osr
 from qgis.PyQt.QtCore import QThread, pyqtSignal
 from qgis.core import Qgis, QgsMessageLog, QgsProcessingFeedback
 
+from ..core import dem_store, memory
+from ..core.memory import SURFACE_MARGIN_CELLS
 from ..core.packages import MANIFEST_NAME
 from ..terrain.analysis import compute_hillshade, compute_slope_deg
 from ..terrain.cs_map import compute_cs_map
 from ..terrain import (
     dem_sources,
+    kept_tiles,
+    sources,
     local_convert,
     nagano_rinmu,
     nagano_sabo,
@@ -33,7 +39,7 @@ from ..terrain.dem_loader import DEMLoader, GSITileDEMLoader, save_as_geotiff
 from ..terrain.result_writer import (
     GEOPDF_DEM_NAME, save_geopdf_dem, save_raster, save_rgba_raster,
 )
-from ..terrain import contours, watershed
+from ..terrain import contours, coverage, dem_gaps, watershed
 from ..terrain.styles import write_catchment_qml, write_contour_qml, write_morizon_slope_qml
 
 
@@ -48,11 +54,23 @@ class TerrainJobError(Exception):
 class TerrainJobWorker(QThread):
     message = pyqtSignal(str)
     done = pyqtSignal(object, bool, str)
+    # Bytes the next heavy step needs (for the memory meter).
+    needs_memory = pyqtSignal(float)
+    # (bytes needed, bytes free): the UI asks whether to go on and calls
+    # answer_memory().
+    short_of_memory = pyqtSignal(float, float)
 
     def __init__(self, specification, parent=None):
         super().__init__(parent)
         self.specification = dict(specification)
         self._cancelled = False
+        self._answered = threading.Event()
+        self._go_on = False
+        # The last step reported, and a line from work running beside it
+        # (the regional analysis's fetch): shown together.
+        self._main_text = ""
+        self._side_text = ""
+        self._text_lock = threading.Lock()
         # Processing (GRASS) steps watch this feedback; cancelling the worker
         # cancels them too.
         self.processing_feedback = QgsProcessingFeedback()
@@ -60,6 +78,22 @@ class TerrainJobWorker(QThread):
     def cancel(self):
         self._cancelled = True
         self.processing_feedback.cancel()
+        self._answered.set()
+
+    def memory_need(self, need):
+        self.needs_memory.emit(float(need))
+
+    def confirm_memory(self, need, available):
+        """Wait here (the analysis pauses) until the UI answers."""
+        self._go_on = False
+        self._answered.clear()
+        self.short_of_memory.emit(float(need), float(available or 0))
+        self._answered.wait()
+        return self._go_on and not self._cancelled
+
+    def answer_memory(self, go_on):
+        self._go_on = bool(go_on)
+        self._answered.set()
 
     def cancelled(self):
         return self._cancelled
@@ -69,7 +103,18 @@ class TerrainJobWorker(QThread):
             raise TerrainJobCancelled()
 
     def report(self, text):
-        self.message.emit(text)
+        with self._text_lock:
+            self._main_text = text
+            combined = text + ("\n" + self._side_text if self._side_text else "")
+        self.message.emit(combined)
+
+    def report_side(self, text):
+        """A second line for work running beside the steps (from another
+        thread); "" takes it away."""
+        with self._text_lock:
+            self._side_text = text or ""
+            combined = self._main_text + ("\n" + self._side_text if self._side_text else "")
+        self.message.emit(combined)
 
     def run(self):
         try:
@@ -110,13 +155,29 @@ def create_terrain_package(specification, context):
     # is removed: Windows cannot delete a file GDAL still holds open.
     with tempfile.TemporaryDirectory(
         prefix="qlae_", ignore_cleanup_errors=True
-    ) as temporary, contextlib.ExitStack() as opened:
+    ) as temporary, _out_of_space_as_error(
+        temporary, os.path.dirname(package_path), specification.get("dem_store_dir")
+    ), contextlib.ExitStack() as opened:
         data_dir = os.path.join(temporary, "data")
         output_dir = os.path.join(temporary, "outputs")
         style_dir = os.path.join(temporary, "styles")
         area_dir = os.path.join(temporary, "area")
         for directory in (data_dir, output_dir, style_dir, area_dir):
             os.makedirs(directory, exist_ok=True)
+        # The regional analysis's fetching, beside the steps below (its
+        # route's prefetch, in a thread of its own); stopped when the job
+        # ends whichever way.
+        prefetch = _RegionalPrefetch(specification, temporary, context)
+        opened.callback(prefetch.stop)
+        if prefetch.route is not None and not _offline(specification):
+            # Where the route keeps what it reads by tiles (the DSM chunks):
+            # the same store as the DEM's.
+            try:
+                kept = _tile_store(specification, context)
+                prefetch.info["tile_store"] = (kept.root, kept.kind)
+            except (OSError, TerrainJobError):
+                pass
+        prefetch.start()
 
         context.report("Preparing DEM...")
         context.check()
@@ -170,24 +231,40 @@ def create_terrain_package(specification, context):
         hillshade = None
         slope = None
         cs_map = None
+        # Hillshade, slope and the CS Map on the frame with a margin, not on
+        # the whole acquired DEM: with catchments that is three times wider
+        # and, at 0.5 m, too large for the memory (the CS Map alone needs
+        # some 360 bytes a cell).
+        outer, inner = _margin_window(prepared.data, window, SURFACE_MARGIN_CELLS)
+        surface_dem = prepared.data[outer[0]:outer[1], outer[2]:outer[3]]
+        # The DEM is read: with its real size, ask before the heaviest step
+        # when the free memory is short (other programs may have taken some
+        # since the run started). Linux stops QGIS when memory runs out.
+        _check_memory(
+            context,
+            memory.step_need(requested, surface_dem.size, prepared.data.size),
+        )
         if "hillshade" in requested:
             context.report("Creating hillshade...")
-            hillshade_full = compute_hillshade(prepared.data, prepared.cell_size)
-            hillshade = _extract_window(hillshade_full, window, np.nan)
+            hillshade_full = compute_hillshade(surface_dem, prepared.cell_size)
+            hillshade = _extract_window(hillshade_full, inner, np.nan)
+            del hillshade_full
             hillshade[~mask] = np.nan
             context.check()
 
         if "slope" in requested:
             context.report("Creating slope...")
-            slope_full = compute_slope_deg(prepared.data, prepared.cell_size)
-            slope = _extract_window(slope_full, window, np.nan)
+            slope_full = compute_slope_deg(surface_dem, prepared.cell_size)
+            slope = _extract_window(slope_full, inner, np.nan)
+            del slope_full
             slope[~mask] = np.nan
             context.check()
 
         if "cs_map" in requested:
             context.report("Creating CS Map...")
-            cs_full = compute_cs_map(prepared.data, prepared.cell_size)
-            cs_map = _extract_window(cs_full, window, 0)
+            cs_full = compute_cs_map(surface_dem, prepared.cell_size)
+            cs_map = _extract_window(cs_full, inner, 0)
+            del cs_full
             if cs_map.shape[2] == 4:
                 cs_map[:, :, 3][~valid_inside] = 0
             else:
@@ -239,6 +316,9 @@ def create_terrain_package(specification, context):
         # files. Without it the analysis is complete all the same.
         preview_view = specification.get("preview_view") or {}
         preview_crs_wkt = preview_view.get("crs_wkt")
+        # Why the DEM for the GeoPDF was not made, for the finish message:
+        # "network", "too_wide" (dem_gaps.FillIncomplete) or "error".
+        geopdf_dem_missing = None
         if preview_crs_wkt:
             try:
                 context.report("Writing the DEM for the GeoPDF...")
@@ -248,9 +328,18 @@ def create_terrain_package(specification, context):
                     os.path.join(temporary, "_work"),
                     "gsi" if specification.get("geopdf_dem_japan") else "terrarium",
                     context.check,
+                    fill_holes_first=_geopdf_fill_holes_first(specification),
                 )
                 output_members["dem_geopdf"] = "data/" + GEOPDF_DEM_NAME
+            except dem_gaps.FillIncomplete as error:
+                geopdf_dem_missing = error.reason
+                QgsMessageLog.logMessage(
+                    "The DEM for the GeoPDF was not made: its gaps could not be "
+                    "filled ({}).".format(error.reason),
+                    "Quick Landscape Analysis Explorer", Qgis.MessageLevel.Warning,
+                )
             except (RuntimeError, OSError, ValueError, TerrainJobError) as error:
+                geopdf_dem_missing = "error"
                 QgsMessageLog.logMessage(
                     "The DEM for the GeoPDF could not be written: {}".format(error),
                     "Quick Landscape Analysis Explorer", Qgis.MessageLevel.Warning,
@@ -346,6 +435,8 @@ def create_terrain_package(specification, context):
                 "valid_coverage_percent": round(100.0 * valid_count / inside_count, 3),
             },
             "outputs": output_members,
+            # Set when the DEM for the GeoPDF was not made (see above).
+            "geopdf_dem_missing": geopdf_dem_missing,
             "contours": {
                 "method": contours.METHOD_TEXT,
                 "interval_m": contours.INTERVAL_M,
@@ -374,8 +465,10 @@ def create_terrain_package(specification, context):
                 # put into the largest catchment next to them.
                 "holes_filled_cells": catchment_details.get("filled_cells"),
                 "fragment_cells": watershed.FRAGMENT_CELLS,
-                "acquisition": "A-series frame x{:g} (all analyses on the wider area, "
-                "then cut to the frame)".format(WATERSHED_WIDEN),
+                "acquisition": "A-series frame x{:g} (catchments and contours on the "
+                "wider area, hillshade, slope and CS Map on the frame with a margin "
+                "of {} cells, then cut to the frame)".format(
+                    WATERSHED_WIDEN, SURFACE_MARGIN_CELLS),
                 "catchments": len(catchments),
                 "incomplete": sum(1 for item in catchments if not item["complete"]),
             } if catchments is not None else None,
@@ -385,6 +478,11 @@ def create_terrain_package(specification, context):
                 else None
             },
         }
+        # The country's regional analysis, after the basic one: its route
+        # (terrain/sources/) writes into regional/<key>/ of the same ZIP.
+        manifest["regional"] = _run_regional(
+            specification, temporary, output_members, context, prefetch
+        )
         with open(os.path.join(temporary, MANIFEST_NAME), "w", encoding="utf-8") as stream:
             json.dump(manifest, stream, ensure_ascii=False, indent=2)
 
@@ -497,6 +595,16 @@ def _geometry_from_specification(specification):
 def _acquire_loader(specification, acquisition_frame, temporary, context):
     """Open or fetch the DEM chosen in the DEM section."""
 
+    loader, source = _acquire_source(specification, acquisition_frame, temporary, context)
+    if _offline(specification):
+        # From the QLAE folder: the source's own facts (provider, licence,
+        # credit), read from the tiles kept there. The folder's path is not
+        # recorded.
+        source["from_qlae_folder"] = True
+    return loader, source
+
+
+def _acquire_source(specification, acquisition_frame, temporary, context):
     key = specification.get("source_key") or dem_sources.key_from_legacy(
         specification.get("source_kind"), specification.get("gsi_dataset")
     )
@@ -569,16 +677,29 @@ def _fetch_vs_loader(specification, acquisition_frame, work_dir, context):
         context.check()
         context.report("Checking VIRTUAL SHIZUOKA tiles... {}/{}".format(done, total))
 
-    try:
-        resolved = vs_lp.resolve_all_years(codes, progress_cb=checking)
-    except vs_lp.VsConnectionError as error:
-        # Not "no tiles": the bucket did not answer.
-        raise TerrainJobError(
-            "VIRTUAL SHIZUOKA could not be reached (no answer from the server). "
-            "Check the network and run again.\n" + str(error)
-        )
-    if not resolved:
-        raise TerrainJobError("No VIRTUAL SHIZUOKA tiles are available for the analysis area.")
+    offline = _offline(specification)
+    if offline:
+        # The QLAE folder: the years kept there, newest first.
+        store = _tile_store(specification, context)
+        kept = kept_tiles.codes(store.root, "vs_lp")
+        resolved = {code: kept[code] for code in codes if code in kept}
+        if not resolved:
+            raise TerrainJobError(NO_KEPT_TILES_ERROR)
+    else:
+        try:
+            resolved = vs_lp.resolve_all_years(codes, progress_cb=checking)
+        except vs_lp.VsConnectionError as error:
+            # Not "no tiles": the bucket did not answer.
+            raise TerrainJobError(
+                "VIRTUAL SHIZUOKA could not be reached (no answer from the server). "
+                "Check the network and run again.\n" + str(error)
+            )
+        if not resolved:
+            raise TerrainJobError("No VIRTUAL SHIZUOKA tiles are available for the analysis area.")
+        # Tiles kept from earlier analyses (this QGIS run, or the chosen
+        # folder) are used as they are; the survey years above are still
+        # checked, so a newer year is fetched.
+        store = _tile_store(specification, context)
     # The newest survey of a tile may cover only part of it (08OE8859: 2020
     # a corner, 2019 nearly all): fill what it leaves from older surveys.
     fetched = []  # (year, path)
@@ -590,18 +711,25 @@ def _fetch_vs_loader(specification, acquisition_frame, work_dir, context):
         for year in years:
             context.check()
             context.report("Downloading VIRTUAL SHIZUOKA tiles... {}/{}".format(index, total))
-            # One folder a year: a tile's files are named by its code only.
-            year_dir = os.path.join(work_dir, "vs_{}".format(year))
-            os.makedirs(year_dir, exist_ok=True)
-            try:
-                path = vs_lp.download_grid_tif(
-                    code, year, year_dir, cancel_cb=context.cancelled
-                )
-            except remote_zip.Cancelled:
-                raise TerrainJobCancelled()
-            except Exception as error:  # one tile failing should not stop the rest
-                errors.append("{} ({}): {}".format(code, year, error))
+            path = store.find("vs_lp", year, code)
+            if path is not None:
+                store.reused += 1
+            elif offline:
                 continue
+            else:
+                incoming = store.incoming()
+                try:
+                    path = store.keep("vs_lp", year, code, vs_lp.download_grid_tif(
+                        code, year, incoming, cancel_cb=context.cancelled
+                    ))
+                    store.downloaded += 1
+                except remote_zip.Cancelled:
+                    raise TerrainJobCancelled()
+                except Exception as error:  # one tile failing should not stop the rest
+                    errors.append("{} ({}): {}".format(code, year, error))
+                    continue
+                finally:
+                    store.drop_incoming(incoming)
             fetched.append((year, path))
             if vs_lp.missing_share(path, *part) < 0.0005:
                 break
@@ -614,14 +742,40 @@ def _fetch_vs_loader(specification, acquisition_frame, work_dir, context):
     years = sorted({year for year, _path in fetched})
     return _clip_fetched(path, acquisition_frame, specification), {
         "kind": "vs_lp",
-        "provider": "Shizuoka Prefecture (VIRTUAL SHIZUOKA)",
-        "dataset": "VS LP/Grid 0.5m DTM",
+        "provider": sources.get("vs_lp")["facts"]["provider"],
+        "dataset": sources.get("vs_lp")["facts"]["dataset"],
         "survey_years": years,
         "tiles": len({code for code in resolved}),
         "tile_files": len(fetched),
-        "licence": "CC BY 4.0",
+        # Kept tiles used again, and tiles downloaded (now kept too). The
+        # store: "session" (this QGIS run) or "folder" (chosen by the user;
+        # its path is not written here).
+        "tiles_reused": store.reused,
+        "tiles_downloaded": store.downloaded,
+        "tile_store": store.kind,
+        "licence": sources.get("vs_lp")["facts"]["licence"],
         "service": vs_lp.BUCKET_URL,
     }
+
+
+def _offline(specification):
+    """The DEM source is the QLAE folder: only the kept tiles are used,
+    nothing is fetched; where none is kept there is no data."""
+    return bool(specification.get("offline_store"))
+
+
+def _tile_store(specification, context):
+    """Where the source tiles are kept for reuse (core/dem_store.py)."""
+    if _offline(specification):
+        folder = specification.get("dem_store_dir") or ""
+        if not folder or not os.path.isdir(folder):
+            raise TerrainJobError("The folder of kept DEM tiles was not found.")
+        return dem_store.TileStore(folder, "folder")
+    package_path = os.path.abspath(specification["package_path"])
+    # <project>/quick_landscape_analysis/analyses/<name>.zip
+    project_directory = os.path.dirname(os.path.dirname(os.path.dirname(package_path)))
+    context.report("Preparing the kept DEM tiles...")
+    return dem_store.open_store(project_directory, specification.get("dem_store_dir") or "")
 
 
 def _fetch_nagano_loader(key, specification, acquisition_frame, work_dir, context):
@@ -634,11 +788,21 @@ def _fetch_nagano_loader(key, specification, acquisition_frame, work_dir, contex
     if not codes:
         raise TerrainJobError("No Nagano Prefecture DEM tiles cover the analysis area.")
     codes = sorted(codes)
+    # Kept tiles (core/dem_store.py): the tiles have no survey years to check.
+    store = _tile_store(specification, context)
     paths = []
     missing = []
     total = len(codes)
     for index, code in enumerate(codes, start=1):
         context.check()
+        kept = store.find(key, None, code)
+        if kept is not None:
+            store.reused += 1
+            paths.append(kept)
+            continue
+        if _offline(specification):
+            missing.append(code)
+            continue
         prefix = "Nagano DEM tile {}/{} ({})".format(index, total, code)
 
         def progress(phase, place, detail, prefix=prefix):
@@ -651,27 +815,36 @@ def _fetch_nagano_loader(key, specification, acquisition_frame, work_dir, contex
             )
 
         context.report("{}: locating...".format(prefix))
-        path = module.download_tile_tif(
-            code, work_dir, cancel_cb=context.cancelled, progress_cb=progress
-        )
-        context.check()
+        incoming = store.incoming()
+        try:
+            path = module.download_tile_tif(
+                code, incoming, cancel_cb=context.cancelled, progress_cb=progress
+            )
+            context.check()
+            if path:
+                path = store.keep(key, None, code, path)
+                store.downloaded += 1
+        finally:
+            store.drop_incoming(incoming)
         if path:
             paths.append(path)
         else:
             missing.append(code)
     if not paths:
+        if _offline(specification):
+            raise TerrainJobError(NO_KEPT_TILES_ERROR)
         raise TerrainJobError("No Nagano Prefecture DEM tiles could be fetched for this area.")
     path = _merge_or_single(paths, work_dir, key)
-    sabo = key == "nagano_sabo"
     return _clip_fetched(path, acquisition_frame, specification), {
         "kind": key,
-        "provider": "Nagano Prefecture ({})".format("Sabo Division" if sabo else "Forestry Department"),
-        "dataset": "Nagano {} 0.5m DEM".format("Sabo R3-4" if sabo else "Rinmu"),
+        "provider": sources.get(key)["facts"]["provider"],
+        "dataset": sources.get(key)["facts"]["dataset"],
         "tiles": len(paths),
         "missing_tiles": missing,
-        "service": "https://www.geospatial.jp/ckan/dataset/{}".format(
-            "r3-4-50cmdem" if sabo else "nagano-dem"
-        ),
+        "tiles_reused": store.reused,
+        "tiles_downloaded": store.downloaded,
+        "tile_store": store.kind,
+        "service": sources.get(key)["facts"]["service"],
     }
 
 
@@ -682,7 +855,26 @@ def _fetch_remote_loader(key, specification, acquisition_frame, work_dir, contex
     bbox = _source_envelope(
         acquisition_frame, specification, _epsg_wkt(spec["epsg"]), spec["cell"]
     )
-    path, extra = remote_dem.fetch_remote_dem(context, key, bbox, work_dir)
+    # Kept tiles (core/dem_store.py), for the sources fetched by tiles.
+    # Kept for reuse: the German tiles, and the chunks AHN and IGN are read
+    # in (on a fixed grid). LINZ is read in parts of large files: not kept.
+    store = _tile_store(specification, context) if spec["kind"] in ("de_tiles", "ogc") else None
+    if _offline(specification) and store is None:
+        raise TerrainJobError(NO_KEPT_TILES_ERROR)  # not kept: fetched by area
+    try:
+        path, extra = remote_dem.fetch_remote_dem(
+            context, key, bbox, work_dir, store=store,
+            kept=kept_tiles.codes(store.root, key) if _offline(specification) else None,
+        )
+    except remote_dem.RemoteDemError:
+        if _offline(specification):
+            raise TerrainJobError(NO_KEPT_TILES_ERROR)
+        raise
+    if store is not None:
+        extra.update(
+            tiles_reused=store.reused, tiles_downloaded=store.downloaded, tile_store=store.kind
+        )
+    _take_coverage(key, extra, specification)
     source = {
         "kind": key,
         "provider": spec["provider"],
@@ -691,7 +883,40 @@ def _fetch_remote_loader(key, specification, acquisition_frame, work_dir, contex
         "service": spec["service"],
     }
     source.update(extra)  # credit line and survey years, where the source has them
+    if spec.get("survey_years") and "survey_years" not in source:
+        # Years of the whole dataset (AHN4), where tiles do not name theirs.
+        source["survey_years"] = list(spec["survey_years"])
     return _clip_fetched(path, acquisition_frame, specification), source
+
+
+def _take_coverage(key, extra, specification):
+    """What the fetch learnt about where the source has tiles, into its
+    coverage mesh (terrain/coverage.py): the whole list read anyway
+    (Rhineland-Palatinate, New Zealand) or the tiles found (Bavaria). No
+    more network; a failure here never stops the analysis."""
+    listed = extra.pop("_coverage_list", None)
+    names = extra.pop("_coverage_names", None)
+    found = extra.pop("_coverage_found", None)
+    if _offline(specification):
+        return
+    try:
+        if key == "rlp_dgm1" and listed:
+            coverage.take_list(key, [coverage._rlp_cell(e, n) for e, n in listed])
+        elif key == "linz_dem" and names:
+            cells = []
+            for name in names:
+                try:
+                    cells.append(coverage._linz_cell(name))
+                except (ValueError, IndexError):
+                    continue
+            coverage.take_list(key, cells)
+        elif key == "by_dgm1" and found:
+            coverage.take_found(key, [coverage._rlp_cell(e, n) for e, n in found])
+    except Exception as error:  # noqa: BLE001 - only the mesh is left as it was
+        QgsMessageLog.logMessage(
+            "The coverage mesh was not updated: {}".format(error),
+            "Quick Landscape Analysis Explorer", Qgis.MessageLevel.Info,
+        )
 
 
 def _open_local_loader(specification, acquisition_frame):
@@ -713,6 +938,111 @@ def _open_local_loader(specification, acquisition_frame):
         "name": specification.get("source_name") or os.path.basename(path),
         "file_name": os.path.basename(path),
     }
+
+
+class _RegionalPrefetch:
+    """The route's prefetch(folder, info, progress, cancelled), when it has
+    one, run beside the job's steps: for data that takes a while to fetch
+    (the Netherlands' orthophoto). Its result is handed to run()."""
+
+    def __init__(self, specification, temporary, context):
+        self.key = specification.get("regional_option")
+        self.context = context
+        self.result = None
+        self.error = None
+        self._thread = None
+        self._stop = threading.Event()
+        option, self.route = sources.option_by_key(self.key) if self.key else (None, None)
+        self.folder_member = "regional/" + (self.key or "")
+        self.folder = os.path.join(temporary, *self.folder_member.split("/"))
+        self.info = {"preview_view": specification.get("preview_view") or {},
+                     "folder_member": self.folder_member,
+                     # The QLAE folder, where large regional data is kept.
+                     "kept_folder": specification.get("dem_store_dir") or ""}
+
+    def start(self):
+        if self.route is None or not hasattr(self.route, "prefetch"):
+            return
+        self._thread = threading.Thread(target=self._run, name="qlae-regional-prefetch", daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        report_side = getattr(self.context, "report_side", lambda _text: None)
+        try:
+            self.result = self.route.prefetch(
+                self.folder, self.info, report_side,
+                lambda: self._stop.is_set() or self.context.cancelled(),
+            )
+        except Exception as error:  # noqa: BLE001 - recorded; the basic analysis goes on
+            self.error = error
+        finally:
+            # Done: its line goes (it stayed at its last step, as "100%",
+            # until the whole analysis ended).
+            report_side("")
+
+    def wait(self):
+        """Wait for the prefetch (the job can still be cancelled)."""
+        while self._thread is not None and self._thread.is_alive():
+            self.context.check()
+            self._thread.join(0.2)
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(30)
+            self.context.report_side("")
+
+
+def _geopdf_fill_holes_first(specification):
+    """Whether the chosen regional analysis's country fills the DEM's holes
+    from around them before the DEM for the GeoPDF is made (its OPTION's
+    "geopdf_fill_holes")."""
+    key = specification.get("regional_option")
+    option, _route = sources.option_by_key(key) if key else (None, None)
+    return bool(option and option.get("geopdf_fill_holes"))
+
+
+def _run_regional(specification, temporary, output_members, context, prefetch=None):
+    """Run the chosen regional analysis (its route does the work); its
+    record for the manifest, or None. A failure is recorded and logged,
+    and the basic analysis is kept."""
+    key = specification.get("regional_option")
+    if not key:
+        return None
+    option, route = sources.option_by_key(key)
+    if option is None or route is None:
+        return {"key": key, "error": "not available"}
+    folder_member = "regional/" + key
+    context.check()
+    context.report("Regional analysis...")
+    if prefetch is not None:
+        prefetch.wait()
+    try:
+        result = route.run(
+            os.path.join(temporary, *folder_member.split("/")),
+            {"outputs": dict(output_members), "folder_member": folder_member,
+             # Where the basic analysis's files are (outputs[...] under it).
+             "root": temporary,
+             # The analysis area (area/aoi.wkt under root) is in this CRS.
+             "area_crs_wkt": specification.get("aoi_crs_wkt") or "",
+             "prefetched": prefetch.result if prefetch is not None else None,
+             "prefetch_error": str(prefetch.error) if prefetch is not None and prefetch.error else None},
+            context,
+        ) or {}
+    except (TerrainJobCancelled, TerrainJobError):
+        raise
+    except Exception as error:  # noqa: BLE001 - the basic analysis is kept
+        QgsMessageLog.logMessage(
+            "The regional analysis {} failed: {}".format(key, error),
+            "Quick Landscape Analysis Explorer", Qgis.MessageLevel.Warning,
+        )
+        return {"key": key, "error": str(error)}
+    return dict(result, key=key, name=option["label"])
+
+
+def _facts(key):
+    """The fixed facts of a source from its country file (terrain/sources/)."""
+    return sources.get(key).get("facts", {})
 
 
 def _fetch_tile_loader(key, specification, acquisition_frame, temporary, context):
@@ -740,6 +1070,8 @@ def _fetch_gsi_loader(
     specification, acquisition_frame, temporary, context,
     dataset="best", sources=None, terrarium=False,
 ):
+    # The source's facts (terrain/sources/): the key it was chosen by.
+    fact_key = ("terrarium:" if terrarium else "gsi:") + dataset
     wgs84 = osr.SpatialReference()
     wgs84.ImportFromEPSG(4326)
     wgs84.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
@@ -750,6 +1082,10 @@ def _fetch_gsi_loader(
     pad_x = max((xmax - xmin) * 0.08, 0.0002)
     pad_y = max((ymax - ymin) * 0.08, 0.0002)
     loader = GSITileDEMLoader()
+    # Kept tiles (core/dem_store.py), by zoom level; tiles that could not be
+    # fetched (the sea, outside the coverage) are not kept.
+    store = loader.tile_store = _tile_store(specification, context)
+    loader.offline = _offline(specification)
     if sources is None:
         source_map = {
             "1m": [GSITileDEMLoader.TILE_SOURCES[0]],
@@ -774,6 +1110,8 @@ def _fetch_gsi_loader(
     )
     context.check()
     if loader.data is None or not np.isfinite(loader.data).any():
+        if loader.offline:
+            raise TerrainJobError(NO_KEPT_TILES_ERROR)
         details = getattr(loader, "last_errors", [])
         raise TerrainJobError(details[0] if details else "{} are unavailable for this area.".format(label))
     work_dir = os.path.join(temporary, "_work")
@@ -781,24 +1119,29 @@ def _fetch_gsi_loader(
     raw_path = os.path.join(work_dir, "tile_source.tif")
     save_as_geotiff(loader, raw_path)
     prepared_loader = DEMLoader().load(raw_path)
+    kept = {
+        "tiles_reused": store.reused,
+        "tiles_downloaded": store.downloaded,
+        "tile_store": store.kind,
+    }
     if terrarium:
-        return prepared_loader, {
+        return prepared_loader, dict(kept, **{
             "kind": "terrarium",
-            "provider": "AWS Terrain Tiles (Mapzen Terrarium)",
+            "provider": _facts(fact_key)["provider"],
             "dataset": getattr(loader, "_used_source_label", "Terrarium"),
             "requested_dataset": dataset,
-            "attribution": "Terrain Tiles: Mapzen / AWS Open Data and their data sources",
-            "service": "https://registry.opendata.aws/terrain-tiles/",
-        }
+            "attribution": _facts(fact_key)["attribution"],
+            "service": _facts(fact_key)["service"],
+        })
     used = getattr(loader, "_used_source_label", "GSI DEM")
-    return prepared_loader, {
+    return prepared_loader, dict(kept, **{
         "kind": "gsi",
-        "provider": "Geospatial Information Authority of Japan",
+        "provider": _facts(fact_key)["provider"],
         "dataset": used,
         "requested_dataset": dataset,
-        "attribution": "国土地理院標高タイル",
-        "service": "https://maps.gsi.go.jp/development/ichiran.html",
-    }
+        "attribution": _facts(fact_key)["attribution"],
+        "service": _facts(fact_key)["service"],
+    })
 
 
 def _transform_geometry(geometry, source_wkt, destination_wkt):
@@ -812,8 +1155,16 @@ def _transform_geometry(geometry, source_wkt, destination_wkt):
     return result
 
 
-def _write_geopdf_dem(prepared, preview_view, dem_path, out_path, work_dir, fill, check):
+def _write_geopdf_dem(prepared, preview_view, dem_path, out_path, work_dir, fill, check,
+                      fill_holes_first=False):
     """The DEM for use with the GeoPDF: the preview's area in its CRS.
+
+    In stages: (1) the DEM it starts from: the region's step, when its
+    country file asks (``fill_holes_first``, the Netherlands: AHN's holes
+    under buildings, water and dense trees filled from the ground around
+    them, at the DEM's own resolution); then for every region (2) cut to
+    the preview and warped to its CRS, (3) small holes filled from around
+    them and (4) what is left from the region's external data (``fill``).
 
     The GeoPDF shows the preview, which is often wider than the analysis
     frame (with a polygon area, the land around it). So the DEM is cut from
@@ -860,6 +1211,11 @@ def _write_geopdf_dem(prepared, preview_view, dem_path, out_path, work_dir, fill
         prepared.data[r0:r1, c0:c1], cut_gt, prepared.crs_wkt, work_dir,
         "dem_preview", overwrite=True,
     )
+    if fill_holes_first:
+        # Stage 1 for this region: holes not reaching the edge, from the
+        # heights around them (as the regional "DEM (holes filled)").
+        watershed.fill_enclosed_holes(cut_path, near_holes=True)
+        check()
     save_geopdf_dem(cut_path, out_path, crs_wkt, bounds=(xmin, ymin, xmax, ymax),
                     cell=prepared.cell_size, fill=fill, check=check)
 
@@ -957,6 +1313,82 @@ def _a_series_pixel_window(loader, envelope, landscape):
         r0 -= extra // 2
         r1 += extra - extra // 2
     return r0, r1, c0, c1
+
+
+# The start of the error an analysis stops with when a disk ran out of space;
+# the window words it (dialog._terrain_error_text). Followed by lines: the
+# folder, its free bytes, its whole bytes.
+DISK_FULL_ERROR = "disk_full"
+# The QLAE folder holds no tile of the chosen data over the analysis area
+# (the window words it).
+NO_KEPT_TILES_ERROR = "no_kept_tiles"
+# Less free space than this in a folder after a failure: the disk was full.
+DISK_FULL_FREE_BYTES = 64 * 1024 * 1024
+
+
+@contextlib.contextmanager
+def _out_of_space_as_error(*folders):
+    """Turn a failure from a full disk (the temporary folder or the ZIP's)
+    into a TerrainJobError the window can word: otherwise it reads as a GDAL
+    write error, or as failed downloads."""
+    try:
+        yield
+    except TerrainJobCancelled:
+        raise
+    except Exception as error:
+        folder = _full_folder(error, folders)
+        if folder is None:
+            raise
+        usage = shutil.disk_usage(folder)
+        raise TerrainJobError("{}\n{}\n{}\n{}".format(
+            DISK_FULL_ERROR, _shown_folder(folder), usage.free, usage.total,
+        )) from error
+
+
+def _full_folder(error, folders):
+    """The folder whose disk ran out of space in ``error``, or None."""
+    existing = [folder for folder in folders if folder and os.path.isdir(folder)]
+    text = str(error)
+    said = (
+        getattr(error, "errno", None) == errno.ENOSPC
+        or "No space left" in text
+        or os.strerror(errno.ENOSPC) in text
+    )
+    for folder in existing:
+        if shutil.disk_usage(folder).free < DISK_FULL_FREE_BYTES:
+            return folder
+    if said and existing:
+        return existing[0]
+    return None
+
+
+def _shown_folder(folder):
+    """The folder to name: the temporary one's parent (it is removed)."""
+    name = os.path.basename(os.path.normpath(folder))
+    return os.path.dirname(os.path.normpath(folder)) if name.startswith("qlae_") else folder
+
+
+def _check_memory(context, need):
+    """Tell the context the bytes the next step needs and, when they do not
+    fit in the free memory, ask it whether to go on (stops if not)."""
+    tell = getattr(context, "memory_need", None)
+    if tell is not None:
+        tell(need)
+    short, available = memory.too_much(need)
+    ask = getattr(context, "confirm_memory", None)
+    if short and ask is not None and not ask(need, available):
+        raise TerrainJobCancelled()
+
+
+def _margin_window(data, window, margin):
+    """The window widened by ``margin`` cells and kept within ``data``, and
+    the window relative to it (both as (r0, r1, c0, c1))."""
+    r0, r1, c0, c1 = window
+    rows, cols = data.shape[:2]
+    outer_r0, outer_r1 = max(0, r0 - margin), min(rows, r1 + margin)
+    outer_c0, outer_c1 = max(0, c0 - margin), min(cols, c1 + margin)
+    inner = (r0 - outer_r0, r1 - outer_r0, c0 - outer_c0, c1 - outer_c0)
+    return (outer_r0, outer_r1, outer_c0, outer_c1), inner
 
 
 def _extract_window(data, window, fill_value):

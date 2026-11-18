@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import zipfile
 
 from qgis.PyQt import sip
@@ -63,7 +64,7 @@ from qgis.PyQt.QtWidgets import (
     QStyle,
     QStyleOptionComboBox,
     QStylePainter,
-    QTextEdit,
+    QTextBrowser,
     QToolButton,
     QToolTip,
     QVBoxLayout,
@@ -104,9 +105,15 @@ from qgis.gui import (
 
 # bbox84 under its own name: methods here have local variables called bbox84.
 from .conversion_dialog import ConversionDialog, bbox84 as _bbox84
-from .analyses.terrain import WATERSHED_WIDEN, TerrainJobWorker, _a_series_envelope
-from .core import packages
+from .analyses.terrain import (
+    DISK_FULL_ERROR, NO_KEPT_TILES_ERROR, WATERSHED_WIDEN, TerrainJobWorker, _a_series_envelope,
+)
+from .advanced_dialog import AdvancedSettingsDialog
+from .coverage_view import REGION_KEYS, CoverageView, country_by_outline
+from .mesh_overlay import MeshOverlay, region_outline
+from .core import dem_store, memory, packages
 from .geopdf_task import GeoPdfTask
+from .memory_meter import add_to_heading as _add_memory_meter
 from .i18n import ENGLISH, JAPANESE, is_japanese, set_language, tr
 from .ui_fonts import PLUGIN_SIZE_RULE, ask_int, ask_text, plugin_font, use_plugin_font
 from .layer_combo import (
@@ -115,14 +122,19 @@ from .layer_combo import (
     align_layer_choice_labels,
 )
 from .preview_scale import ScaleLimitSuspender
-from . import preview_tiles
+from . import focus_order, preview_tiles
 from .core import session
-from .management_panel import AnalysisManagementPanel
+from .management_panel import (
+    BASE_MAP_ONLY_PROPERTY, EXCLUDES_PROPERTY, OUTPUT_KEY_PROPERTY, REGIONAL_DATA_PROPERTY,
+    REGIONAL_GROUP_PROPERTY,
+    AnalysisManagementPanel,
+)
 from .order_arrows import LayerOrderArrows
 from .plugin import PLUGIN_NAME
 from .core.crs import gdal_wkt
 from .terrain import (
-    dem_sources, local_convert, remote_dem, result_writer, watershed, world_country,
+    coverage, dem_sources, kept_tiles, local_convert, sources, remote_dem, result_writer, watershed,
+    world_country,
 )
 from .terrain.styles import SLOPE_COLORS
 
@@ -605,6 +617,8 @@ class LandscapeExplorerDialog(QDialog):
         self._pendingPreviewView = None
         self._pendingInspectionRefresh = False
         self._terrainWorker = None
+        # Memory an analysis is expected to take (set before it runs).
+        self._memoryNeed = None
         self._overwritePackagePath = None
         self._resizePreviewExtent = None
         self._stablePreviewExtent = None
@@ -673,6 +687,7 @@ class LandscapeExplorerDialog(QDialog):
         # startup width is applied below, still before the first show().
         self.resize(1200, 590)
 
+        self._controlKeys = focus_order.ControlKeys(self)
         main = QVBoxLayout(self)
         self.columnsSplitter = QSplitter(Qt.Orientation.Horizontal, self)
         self.columnsSplitter.setChildrenCollapsible(False)
@@ -866,14 +881,15 @@ class LandscapeExplorerDialog(QDialog):
         self.previewRubber.setFillColor(QColor(255, 151, 54, 80))
         self.previewRubber.setWidth(0)
 
-        # Where the chosen local DEM file holds values: thin line, light hatch.
-        self.localDemRubber = QgsRubberBand(
-            self.previewCanvas, Qgis.GeometryType.Polygon
+        # Where the chosen local DEM file (or the QLAE folder's tiles) holds
+        # values: a thin outline and a coarse, thin mesh (mesh_overlay.py).
+        self.localDemRubber = MeshOverlay(self.previewCanvas)
+        # The region a regional network source is offered for, beside its mesh.
+        self.regionRubber = region_outline(self.previewCanvas)
+        # The same mesh for where a regional network source has data.
+        self._coverageView = CoverageView(
+            self, self._coverage_changed, self._coverage_new_tiles, self._coverage_failed
         )
-        self.localDemRubber.setStrokeColor(QColor(30, 90, 200, 170))
-        self.localDemRubber.setFillColor(QColor(30, 90, 200, 110))
-        self.localDemRubber.setBrushStyle(Qt.BrushStyle.DiagCrossPattern)
-        self.localDemRubber.setWidth(1)
 
         status_row = QWidget(preview_box)
         status_layout = QHBoxLayout(status_row)
@@ -1166,10 +1182,12 @@ class LandscapeExplorerDialog(QDialog):
         terrain_row = QHBoxLayout()
         dem_column = QVBoxLayout()
         dem_column.addWidget(self._build_data_box(), 1)
-        dem_column.addWidget(self._build_analysis_name_box())
+        self.analysisNameBox = self._build_analysis_name_box()
+        dem_column.addWidget(self.analysisNameBox)
         terrain_row.addLayout(dem_column, 1)
         analysis_column = QVBoxLayout()
-        analysis_column.addWidget(self._build_analysis_box())
+        self.analysisBox = self._build_analysis_box()
+        analysis_column.addWidget(self.analysisBox)
         analysis_column.addWidget(self._build_run_box())
         terrain_row.addLayout(analysis_column, 1)
         layout.addLayout(terrain_row)
@@ -1204,6 +1222,9 @@ class LandscapeExplorerDialog(QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
+        # The arrow keys stay with the control; no auto default buttons; a
+        # link label is one stop (focus_order.py).
+        self._controlKeys.watch(self)
         QTimer.singleShot(0, self._finish_initial_layout)
         if self._layerChoicesPending:
             # The project's layers changed while the window was closed.
@@ -1212,6 +1233,15 @@ class LandscapeExplorerDialog(QDialog):
         if self._previewLayersPending:
             self._previewLayersPending = False
             self._previewLayersTimer.start()
+
+    def focusNextPrevChild(self, forward):
+        # Tab: the left panel, then the right panel box by box (focus_order.py).
+        # In analysis management the preview is fixed to the analysis, with
+        # nothing to do on it by keys: Tab passes it over.
+        skip = (self.previewCanvas,) if self._in_management() else ()
+        # 2. DEM, 3. Analysis, then the analysis name under 2. DEM, then 4. Run.
+        after = ((self.analysisNameBox, self.analysisBox),)
+        return focus_order.move(self, forward, skip, after) or super().focusNextPrevChild(forward)
 
     def _queue_preview_layers(self, *args):
         """Layer panel on/off changed: redraw the preview while it is shown."""
@@ -1458,7 +1488,7 @@ class LandscapeExplorerDialog(QDialog):
         ).format(name))
         open_button = box.addButton(tr("Open", "開く"), QMessageBox.ButtonRole.AcceptRole)
         empty_button = box.addButton(
-            tr("Start empty", "空で始める"), QMessageBox.ButtonRole.RejectRole
+            tr("Start a new analysis", "新しく解析を始める"), QMessageBox.ButtonRole.RejectRole
         )
         box.setDefaultButton(open_button)
         box.setEscapeButton(empty_button)
@@ -2008,12 +2038,15 @@ class LandscapeExplorerDialog(QDialog):
         # Same order, look and visibility as the analysis group.
         group_node = _package_layer_group(package_path)
         sources = []
+        parent_is_regional = {}
         if group_node is not None:
             for node in group_node.findLayers():
                 if node.layer() is not None:
                     parent = node.parent()
                     sub = parent.name() if parent is not group_node else ""
                     sources.append((node.layer(), node.isVisible(), sub))
+                    parent_is_regional[node.layer().id()] = bool(
+                        parent.customProperty(REGIONAL_GROUP_PROPERTY))
         root = project.layerTreeRoot()
         plugin_first = bool(root.children()) and isinstance(
             root.children()[0], QgsLayerTreeGroup
@@ -2027,6 +2060,11 @@ class LandscapeExplorerDialog(QDialog):
             if not path:
                 continue
             style_path = os.path.splitext(path)[0] + ".qml"
+            if parent_is_regional.get(source.id()):
+                # A regional layer can read a basic file (the NAP colouring
+                # reads the DEM): its style beside it under its own name.
+                style_path = os.path.splitext(path)[0] + "_" + re.sub(
+                    r"[^0-9A-Za-z]+", "_", source.name()).strip("_").lower() + ".qml"
             # Without the custom properties: they hold the plugin's markers,
             # which would make the plugin treat these files as its own.
             source.saveNamedStyle(style_path, categories=_style_without_custom_properties())
@@ -2047,7 +2085,8 @@ class LandscapeExplorerDialog(QDialog):
                 if target is None:
                     target = sub_groups[sub] = group.addGroup(sub)
             node = target.addLayer(layer)
-            node.setItemVisibilityChecked(visible)
+            # The regional analysis's layers come out inactive.
+            node.setItemVisibilityChecked(visible and not parent_is_regional.get(source.id()))
             node.setExpanded(False)
             count += 1
         group.setExpanded(True)
@@ -2071,7 +2110,7 @@ class LandscapeExplorerDialog(QDialog):
             "extent": _rectangle_values(self.previewCanvas.extent()),
             "crs_wkt": preview_crs.toWkt(),
             "description": _layout_description(manifest),
-            "credits": _layout_credits(manifest, [], []),
+            "credits": _layout_credits(manifest, [], [], all_regional=True),
             "summary": _safe_area_summary(package_path, manifest),
         })
         self.resultEdit.setPlainText(
@@ -2088,10 +2127,10 @@ class LandscapeExplorerDialog(QDialog):
                 "これらは普通のレイヤーで、プラグインは消したり入れ替えたりしません。",
             ).format(folder, count, name)
             + ("\n" + tr(
-                "{} is the DEM for use with the GeoPDF: in the preview's CRS ({}), "
-                "uncompressed, a little wider than the preview.",
-                "{} は、GeoPDFと組み合わせて使うDEMです（プレビューの座標系 {}、"
-                "非圧縮、プレビューより少し広い範囲）。",
+                "{} is made over the GeoPDF's area with a margin added "
+                "(in the preview's CRS ({}), uncompressed).",
+                "{} は、GeoPDFの範囲に余白を加えた大きさで作成しています"
+                "（プレビューの座標系 {}、非圧縮）。",
             ).format(os.path.basename(geopdf_dem), preview_crs.authid() or preview_crs.description())
                if geopdf_dem else "")
         )
@@ -2148,8 +2187,13 @@ class LandscapeExplorerDialog(QDialog):
             extent=self.previewCanvas.extent(),
             crs=self.previewCanvas.mapSettings().destinationCrs(),
             description=_layout_description(manifest),
-            credits=_layout_credits(manifest, layers, legend_layers),
+            credits=_layout_credits(
+                manifest, layers, legend_layers,
+                extent=self.previewCanvas.extent(),
+                crs=self.previewCanvas.mapSettings().destinationCrs(),
+            ),
             summary=_safe_area_summary(package_path, manifest),
+            base_map=self.baseMapCombo.currentLayer(),
         )
         self._show_status(status or tr(
             "The print layout was not made.", "印刷レイアウトの作成を取り消しました。"
@@ -2301,13 +2345,16 @@ class LandscapeExplorerDialog(QDialog):
     def _toggle_preview_orientation(self):
         self._set_preview_orientation(not self._previewLandscape)
         if not self._in_management():
-            # The input (profile) screen's orientation is kept in the project.
-            # Analysis management takes its orientation from the analysis.
-            project = QgsProject.instance()
-            value = "landscape" if self._previewLandscape else "portrait"
-            stored, ok = project.readEntry(_PROJECT_SCOPE, _PREVIEW_ORIENTATION_KEY, "")
-            if not ok or stored != value:
-                project.writeEntry(_PROJECT_SCOPE, _PREVIEW_ORIENTATION_KEY, value)
+            self._store_preview_orientation()
+
+    def _store_preview_orientation(self):
+        """The input (profile) screen's orientation is kept in the project.
+        Analysis management takes its orientation from the analysis."""
+        project = QgsProject.instance()
+        value = "landscape" if self._previewLandscape else "portrait"
+        stored, ok = project.readEntry(_PROJECT_SCOPE, _PREVIEW_ORIENTATION_KEY, "")
+        if not ok or stored != value:
+            project.writeEntry(_PROJECT_SCOPE, _PREVIEW_ORIENTATION_KEY, value)
 
     def _stored_preview_landscape(self):
         """True/False from the project, or None when nothing was stored."""
@@ -2721,8 +2768,28 @@ class LandscapeExplorerDialog(QDialog):
             )
         )
         form.addRow(self.profileLabel)
-        section_layout.addWidget(box)
+        # Advanced settings: a gear outside the box, at its right.
+        box_row = QHBoxLayout()
+        box_row.setContentsMargins(0, 0, 0, 0)
+        box_row.addWidget(box, 1)
+        box_row.addSpacing(8)
+        self.advancedButton = QToolButton(section)
+        self.advancedButton.setIcon(QgsApplication.getThemeIcon("/mActionOptions.svg"))
+        self.advancedButton.setAutoRaise(True)
+        self.advancedButton.setToolTip(tr(
+            "Advanced settings: where the fetched DEM tiles are kept for reuse.",
+            "詳細設定：取得したDEMのタイルの保存場所",
+        ))
+        self.advancedButton.clicked.connect(self._open_advanced_settings)
+        box_row.addWidget(self.advancedButton)
+        section_layout.addLayout(box_row)
         return section
+
+    def _open_advanced_settings(self, *args):
+        del args
+        if AdvancedSettingsDialog(self).exec() and self._dem_source_key() == "qlae_folder":
+            # The folder may have changed: list its tiles again.
+            self._dem_source_changed()
 
     def _build_area_box(self):
         box = QGroupBox(tr("1. Area", "1. 範囲"))
@@ -2849,6 +2916,15 @@ class LandscapeExplorerDialog(QDialog):
         local_layout.addWidget(self.localDemEdit, 1)
         local_layout.addWidget(self.localDemBrowseButton)
         local_layout.addWidget(self.localDemFitButton)
+        # The same row for the QLAE folder: which source's kept tiles to use.
+        self.keptSourceCombo = QComboBox(self.localDemRow)
+        self.keptSourceCombo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.keptSourceCombo.setMinimumContentsLength(14)
+        self.keptSourceCombo.setVisible(False)
+        self.keptSourceCombo.currentIndexChanged.connect(self._kept_source_changed)
+        local_layout.addWidget(self.keptSourceCombo, 1)
         self.localDemLabel = QLabel(tr("File", "ファイル"), box)
         form.addRow(self.localDemLabel, self.localDemRow)
         # Keep the row's space while hidden so the section does not change
@@ -2863,14 +2939,17 @@ class LandscapeExplorerDialog(QDialog):
         self.demSourceNote.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
         )
-        # Small text, one character of indent and two lines of height: set
-        # from the font in _apply_font_sizes.
-        form.addRow(self.demSourceNote)
+        # In the field column, so its lines start at the source combo's left
+        # edge; three lines high (set from the font in _apply_font_sizes).
+        form.addRow("", self.demSourceNote)
 
         self._demAvailabilityTimer = QTimer(self)
         self._demAvailabilityTimer.setSingleShot(True)
         self._demAvailabilityTimer.setInterval(300)
         self._demAvailabilityTimer.timeout.connect(self._refresh_dem_source_availability)
+        # The coverage mesh is cut to the preview: redrawn after it moves.
+        self._demAvailabilityTimer.timeout.connect(self._update_coverage_mesh)
+        self._demAvailabilityTimer.timeout.connect(self._update_regional_option)
         # Header colours from the start (refreshed when the preview moves).
         self._refresh_dem_source_availability()
         return box
@@ -2939,7 +3018,7 @@ class LandscapeExplorerDialog(QDialog):
         if label is None:
             return
         centre = self._preview_center84()
-        country, region = dem_sources.source_region(self._dem_source_key()) or (None, None)
+        country, region = dem_sources.source_region(self._effective_source_key()) or (None, None)
         if country is None and centre is not None:
             found = world_country.country_at(*centre)
             if found is not None:
@@ -2999,8 +3078,8 @@ class LandscapeExplorerDialog(QDialog):
             elif key == "linz_dem" and not lerc:
                 available = False
                 tooltip = tr(
-                    "This QGIS cannot read LINZ data (LERC).",
-                    "このQGISはLINZのデータ（LERC）を読めません。",
+                    "This QGIS cannot read LINZ data\n(no LERC support).",
+                    "このQGISはLINZのデータを読めません。\n（LERCに未対応）",
                 )
             flags = Qt.ItemFlag.ItemIsSelectable
             if available:
@@ -3087,15 +3166,29 @@ class LandscapeExplorerDialog(QDialog):
         self.watershedCheck = QCheckBox(tr("Catchment map", "流域範囲図"), box)
         self.watershedCheck.setChecked(False)
         layout.addWidget(self.watershedCheck)
+        # The country's regional analysis (terrain/sources/: its OPTION), one
+        # check under the others when the preview is in that country. Its
+        # row is kept while it is hidden, as the empty row under it.
+        self.regionalCheck = QCheckBox(box)
+        # On by default; it takes effect only while shown and not greyed
+        # (a DEM source chosen), see _terrain_specification.
+        self.regionalCheck.setChecked(True)
+        policy = self.regionalCheck.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self.regionalCheck.setSizePolicy(policy)
+        self.regionalCheck.hide()
+        self._regionalOption = None
         # Empty rows under the checks keep room for the DEM and the base map
         # on the right.
         # (Their height follows the check box: _apply_font_sizes.)
         self._watershedSpacerRows = []
-        for _row in range(2):
+        for _row in range(1):
             spacer_row = QWidget(box)
             layout.addWidget(spacer_row)
             self._watershedSpacerRows.append(spacer_row)
         layout.addStretch(1)
+        # The regional analysis apart from the basic ones, at the bottom.
+        layout.addWidget(self.regionalCheck)
         # Checks are in run order; the layers come out in drawing order.
         self.layerOrderArrows = LayerOrderArrows(
             [
@@ -3125,6 +3218,60 @@ class LandscapeExplorerDialog(QDialog):
         ))
         outer.addWidget(self.layerOrderArrows, 1)
         return box
+
+    def _update_regional_option(self, *args):
+        """Offer the regional analysis of the country at the preview centre
+        (the region shown at the top of the window), when it has one."""
+        del args
+        option = None
+        centre = self._preview_center84()
+        if centre is not None and not self._in_management():
+            # A country's own outline first (finer at its borders than
+            # QGIS's world map), then the world map.
+            code = country_by_outline(*centre)
+            if code is None:
+                found = world_country.country_at(*centre)
+                code = found[0] if found else None
+            option = sources.regional_option(code) if code else None
+        if option is self._regionalOption:
+            return
+        self._regionalOption = option
+        check = self.regionalCheck
+        if option is None:
+            # The tick is kept for when the preview comes back; while hidden
+            # the check is not used.
+            check.hide()
+            return
+        check.setText(tr("Regional", "地域"))
+        check.show()
+        self._update_regional_enabled()
+
+    def _update_regional_enabled(self, *args):
+        """The regional check is greyed until a DEM source is chosen (2. DEM)."""
+        del args
+        if hasattr(self, "regionalCheck"):
+            self.regionalCheck.setEnabled(bool(self._dem_source_key()) and self._dem_source_available())
+            option = self._regionalOption
+            if option is not None:
+                lines = [tr(*option.get("tooltip", option["label"]))]
+                note = self._regional_first_note()
+                if note:
+                    lines.append(note)
+                self.regionalCheck.setToolTip("\n".join(lines))
+
+    def _regional_first_note(self):
+        """What the country's regional analysis fetches the first time only
+        (its route's first_fetch_note), or ""."""
+        option = self._regionalOption
+        if option is None:
+            return ""
+        _option, route = sources.option_by_key(option["key"])
+        note = getattr(route, "first_fetch_note", None) if route is not None else None
+        try:
+            text = note(dem_store.chosen_folder() or "") if note else None
+        except Exception:  # noqa: BLE001 - only a note
+            text = None
+        return tr(*text) if text else ""
 
     def _update_watershed_option(self, *args):
         """The catchment map is offered only with the preview extent."""
@@ -3253,9 +3400,16 @@ class LandscapeExplorerDialog(QDialog):
     def _build_result_box(self):
         box = QGroupBox(tr("Status", "状態"))
         layout = QVBoxLayout(box)
-        self.resultEdit = QTextEdit(box)
+        # A browser for the links some messages hold (the coverage update);
+        # they are handled here, not opened.
+        self.resultEdit = QTextBrowser(box)
         self.resultEdit.setReadOnly(True)
+        self.resultEdit.setOpenLinks(False)
+        self.resultEdit.setOpenExternalLinks(False)
+        self.resultEdit.anchorClicked.connect(self._status_link_clicked)
         layout.addWidget(self.resultEdit)
+        # Shown at the right of the heading while an analysis runs.
+        self.memoryMeter = _add_memory_meter(box)
         return box
 
     def _build_buttons(self):
@@ -3277,8 +3431,10 @@ class LandscapeExplorerDialog(QDialog):
         self.avidMapsLink.linkActivated.connect(self._open_avid_maps_page)
         self.avidMapsLink.setToolTip(tr(
             "Avid Maps Extra: a field map app (PWA) that opens the GeoPDF made here.\n"
+            "With dem_for_geopdf.tif it also shows the terrain in 3D.\n"
             + AVID_MAPS_URL,
             "Avid Maps Extra：ここで作ったGeoPDFを開ける現場マップ（PWA）\n"
+            "dem_for_geopdf.tif と合わせると、地形を3Dで表示できます。\n"
             + AVID_MAPS_URL,
         ))
 
@@ -3297,19 +3453,15 @@ class LandscapeExplorerDialog(QDialog):
         under the analysis checks.
         """
 
-        # The DEM note: one character of indent, always two lines
-        # high so the section keeps its height whichever source is chosen.
-        # The label measures two lines itself: line spacing alone can be less
-        # than a line's height (some fonts), and a wrapping label adds a
-        # little room, so a height from the line spacing cut off the second
-        # line.
+        # The DEM note: always three lines high so the section keeps its
+        # height whichever source is chosen. The label measures the lines
+        # itself: line spacing alone can be less than a line's height (some
+        # fonts), and a wrapping label adds a little room, so a height from
+        # the line spacing cut off the last line.
         note = self.demSourceNote
-        # A left margin, not setIndent: a label's indent goes to every edge
-        # it is aligned to, so with AlignTop it also put a character of space
-        # above the text (12 px more than the two lines).
-        note.setContentsMargins(note.fontMetrics().horizontalAdvance(tr("M", "あ")), 0, 0, 0)
+        note.setContentsMargins(0, 0, 0, 0)
         text = note.text()
-        note.setText("M\nM")
+        note.setText("M\nM\nM")
         note.setFixedHeight(note.heightForWidth(1000))
         note.setText(text)
 
@@ -3358,8 +3510,10 @@ class LandscapeExplorerDialog(QDialog):
         box.setWindowTitle("Avid Maps Extra")
         box.setText(tr(
             "Avid Maps Extra is a field map app (PWA) that opens the GeoPDFs made "
-            "here.\nIt is made by the author of this plugin (Hideharu Masai).",
+            "here.\nWith the GeoPDF, it can use dem_for_geopdf.tif to show the "
+            "terrain in 3D.\nIt is made by the author of this plugin (Hideharu Masai).",
             "Avid Maps Extra は、ここで作った GeoPDF を現場で開ける地図アプリ（PWA）です。\n"
+            "GeoPDF と合わせて dem_for_geopdf.tif を使うと、地形を3Dで表示できます。\n"
             "このプラグインの作者（Hideharu Masai）が作っています。",
         ))
         box.setInformativeText(tr(
@@ -3622,11 +3776,12 @@ class LandscapeExplorerDialog(QDialog):
             and event.type() in _PREVIEW_NAVIGATION_EVENTS
             and not (
                 event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
-                and event.key() == Qt.Key.Key_Escape
+                and event.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Tab, Qt.Key.Key_Backtab)
             )
         ):
             # The preview is fixed to the analysis; the main map is for looking
-            # around. Swallow wheel zoom, drag pan and keyboard navigation.
+            # around. Swallow wheel zoom, drag pan and keyboard navigation
+            # (but not Tab, or the focus would stay on the preview).
             return True
         return super().eventFilter(watched, event)
 
@@ -3713,6 +3868,10 @@ class LandscapeExplorerDialog(QDialog):
         del args
         if not self._in_management():
             return
+        # The A-series orientation seen in analysis management is kept on
+        # leaving it; the view before it is shown again in that orientation
+        # (the same centre, all of it in view).
+        landscape = self._previewLandscape
         self._managementPackagePath = None
         self._managementExtent = None
         self.resultEdit.clear()
@@ -3725,7 +3884,8 @@ class LandscapeExplorerDialog(QDialog):
         view = self._explorePreviewView
         self._explorePreviewView = None
         if view:
-            self._set_preview_orientation(view.get("preview_landscape", False))
+            self._set_preview_orientation(landscape)
+            self._store_preview_orientation()
             self._restore_preview_view(view)
             # Re-apply after the orientation change has resized the window.
             QTimer.singleShot(0, lambda state=view: self._restore_preview_view(state))
@@ -4529,11 +4689,26 @@ class LandscapeExplorerDialog(QDialog):
         del args
         key = self._dem_source_key()
         local = key == "local"
-        self.localDemLabel.setVisible(local)
-        self.localDemRow.setVisible(local)
+        kept = key == "qlae_folder"
+        self.localDemLabel.setVisible(local or kept)
+        self.localDemRow.setVisible(local or kept)
+        self.localDemLabel.setText(tr("Data", "データ") if kept else tr("File", "ファイル"))
+        for widget in (self.localDemEdit, self.localDemBrowseButton, self.localDemFitButton):
+            widget.setVisible(not kept)
+        self.keptSourceCombo.setVisible(kept)
+        if kept:
+            self._refresh_kept_sources()
         if hasattr(self, "localDemRubber"):
             self._update_local_dem_footprint()
         note = _dem_source_note(key)
+        if kept and not dem_store.chosen_folder():
+            note = tr(
+                "Choose a folder in the advanced\nsettings (the gear beside Region).",
+                "詳細設定（地域の横の歯車）で\n保存場所を選んでください。",
+            )
+        elif kept and self.keptSourceCombo.count() == 0:
+            note = tr("The folder holds no kept DEM tiles yet.",
+                      "保存場所に、まだDEMのタイルがありません。")
         if not key:
             note = tr("Choose a source.", "取得元を選んでください。")
         elif not self._dem_source_available():
@@ -4542,6 +4717,7 @@ class LandscapeExplorerDialog(QDialog):
             note = item.toolTip() if item is not None else note
         self.demSourceNote.setText(note)
         self._update_region_label()
+        self._update_regional_enabled()
         # Remember the source before this change, to go back to it when the
         # Terrarium notice is not accepted.
         self._demSourceBeforeChange = getattr(self, "_demSourceCurrent", None)
@@ -4717,6 +4893,29 @@ class LandscapeExplorerDialog(QDialog):
         """Show the local DEM's value area while it is the chosen source."""
 
         self.localDemRubber.reset(Qgis.GeometryType.Polygon)
+        self.regionRubber.reset(Qgis.GeometryType.Line)
+        key = self._dem_source_key() or ""
+        if key in coverage.KEYS or key in REGION_KEYS:
+            # A regional network source: where it has data (the mesh,
+            # terrain/coverage.py) and the region it is for (the outline).
+            if self._in_management():
+                return
+            found = self._coverageView.shape(key, self.previewCanvas) if key in coverage.KEYS else None
+            if found is not None:
+                self.localDemRubber.setToGeometry(*found)
+            region = self._coverageView.region(key)
+            if region is not None:
+                area, crs = region
+                self.regionRubber.setToGeometry(
+                    QgsGeometry(area.constGet().boundary()), crs)
+            self._coverageView.check_if_due(key)
+            return
+        if key == "qlae_folder":
+            # The area the kept tiles cover, with the same mesh.
+            found = None if self._in_management() else self._kept_footprint()
+            if found is not None:
+                self.localDemRubber.setToGeometry(*found)
+            return
         info = getattr(self, "_localDemInfo", None)
         if (
             not info
@@ -4730,6 +4929,67 @@ class LandscapeExplorerDialog(QDialog):
         if geometry.isNull() or not crs.isValid():
             return
         self.localDemRubber.setToGeometry(geometry, crs)
+
+    def _update_coverage_mesh(self, *args):
+        """The preview moved: the coverage mesh is cut to it again."""
+        del args
+        if (self._dem_source_key() or "") in coverage.KEYS:
+            # The mesh is cut to the view; the region outline is drawn whole.
+            self._update_local_dem_footprint()
+
+    def _coverage_changed(self, key, taken):
+        """A source's coverage was brought up to date in the background."""
+        if self._dem_source_key() == key:
+            self._update_local_dem_footprint()
+        if getattr(self, "_coverageAsked", None) == key:
+            self._coverageAsked = None
+            text = tr(*sources.get(key).get("updated", (
+                "The coverage mesh is up to date.", "範囲の網目を更新しました。")))
+            if taken >= 0:
+                text += tr(" (about {:,} new tiles)", "（新しいタイル 約{:,}枚）").format(taken)
+            self.resultEdit.setPlainText(text)
+
+    def _coverage_new_tiles(self, key, count):
+        """France has new tiles, or Bavaria a newer list: the Status section
+        asks whether to fetch them, in the words of the source's country
+        file (only a count or a date was read; fetching takes a while on a
+        slow line)."""
+        if self._dem_source_key() != key:
+            return
+        self._coverageAsked = key
+        text = sources.get(key).get("ask_update")
+        if not text:
+            return
+        # count: France, the new tiles (about a second for each thousand to
+        # read); Bavaria, the list's size (sent compressed, about a fifth).
+        self.resultEdit.setHtml(tr(*text).format(
+            count=count,
+            seconds=max(5, int(round(count / 1000.0)) + 5),
+            mb=max(1, int(round(count / 5e6))),
+        ))
+
+    def _coverage_failed(self, key):
+        if getattr(self, "_coverageAsked", None) == key:
+            self._coverageAsked = None
+            self.resultEdit.setPlainText(tr(
+                "The coverage mesh could not be updated (no answer from the service). "
+                "It is asked again later.",
+                "範囲の網目を更新できませんでした（サービスから応答がありません）。"
+                "あとでまた確認します。",
+            ))
+
+    def _status_link_clicked(self, url):
+        """A link in the Status section (the coverage update)."""
+        target = url.toString()
+        if target == "qlae:coverage-update" and getattr(self, "_coverageAsked", None):
+            self._coverageView.update(self._coverageAsked)
+            self.resultEdit.setPlainText(tr(
+                "Updating the coverage mesh in the background...",
+                "範囲の網目を裏で更新しています…",
+            ))
+        elif target == "qlae:coverage-later":
+            self._coverageAsked = None
+            self.resultEdit.clear()
 
     def _fit_preview_to_local_dem(self, *args):
         """Fit the area of the local DEM that holds values, centred.
@@ -4853,7 +5113,72 @@ class LandscapeExplorerDialog(QDialog):
     def _dem_source_available(self):
         index = self.demSourceCombo.currentIndex()
         item = self.demSourceCombo.model().item(index) if index >= 0 else None
-        return item is not None and bool(item.flags() & Qt.ItemFlag.ItemIsEnabled)
+        if item is None or not item.flags() & Qt.ItemFlag.ItemIsEnabled:
+            return False
+        if self._dem_source_key() == "qlae_folder":
+            return bool(self._kept_source_key())
+        return True
+
+    # The QLAE folder: the DEM tiles kept in the chosen folder.
+
+    def _kept_source_key(self):
+        """The source whose kept tiles are used ("" when none)."""
+        if self._dem_source_key() != "qlae_folder":
+            return ""
+        return self.keptSourceCombo.currentData(Qt.ItemDataRole.UserRole) or ""
+
+    def _effective_source_key(self):
+        """The source the DEM comes from: for the QLAE folder, the chosen
+        kept source (its region, cell size and facts)."""
+        key = self._dem_source_key() or ""
+        return self._kept_source_key() if key == "qlae_folder" else key
+
+    def _refresh_kept_sources(self, *args):
+        """List the sources the chosen folder holds tiles of, with counts,
+        keeping the choice when it is still there."""
+        del args
+        wanted = self._kept_source_key() or getattr(self, "_keptSourceWanted", "")
+        labels = {
+            key: tr(*label)
+            for _group, _region, items in dem_sources.GROUPS for key, label in items
+        }
+        self.keptSourceCombo.blockSignals(True)
+        try:
+            self.keptSourceCombo.clear()
+            for key, count in kept_tiles.kept_sources(dem_store.chosen_folder()):
+                self.keptSourceCombo.addItem(
+                    tr("{} ({} tiles)", "{}（{}枚）").format(labels.get(key, key), count), key
+                )
+            index = self.keptSourceCombo.findData(wanted) if wanted else -1
+            self.keptSourceCombo.setCurrentIndex(max(index, 0) if self.keptSourceCombo.count() else -1)
+        finally:
+            self.keptSourceCombo.blockSignals(False)
+        self._keptFootprint = {}
+
+    def _kept_source_changed(self, *args):
+        del args
+        self._keptSourceWanted = self._kept_source_key()
+        self._update_local_dem_footprint()
+        self._update_region_label()
+        self._update_regional_enabled()
+        self._update_run_button()
+
+    def _kept_footprint(self):
+        """(geometry, crs) the kept tiles of the chosen source cover, or None."""
+        key = self._kept_source_key()
+        if not key:
+            return None
+        cache = getattr(self, "_keptFootprint", None)
+        if cache is None:
+            cache = self._keptFootprint = {}
+        if key not in cache:
+            wkt = kept_tiles.footprint_wkt(dem_store.chosen_folder(), key)
+            cache[key] = (
+                QgsGeometry.fromWkt(wkt) if wkt else None,
+                QgsCoordinateReferenceSystem("EPSG:{}".format(kept_tiles.footprint_epsg(key))),
+            )
+        geometry, crs = cache[key]
+        return (geometry, crs) if geometry is not None and not geometry.isNull() else None
 
     def _run_analysis(self):
         if self._terrainWorker is not None:
@@ -4902,6 +5227,11 @@ class LandscapeExplorerDialog(QDialog):
             self.resultEdit.setPlainText(_watershed_status_text())
         else:
             self.resultEdit.setPlainText(tr("Starting analysis...", "解析を開始します…"))
+        if specification.get("regional_option"):
+            # The first regional analysis takes longer (a large download).
+            note = self._regional_first_note()
+            if note:
+                self.resultEdit.append(note)
         self.runButton.setText(tr("Stop", "中止"))
         self._style_run_button(running=True)
         # Enter must not stop a running analysis.
@@ -4913,6 +5243,10 @@ class LandscapeExplorerDialog(QDialog):
         self._terrainWorker = worker
         worker.message.connect(self._show_terrain_message)
         worker.done.connect(self._terrain_finished)
+        worker.needs_memory.connect(self.memoryMeter.set_need)
+        worker.short_of_memory.connect(self._ask_memory)
+        worker.finished.connect(worker.deleteLater)
+        self.memoryMeter.start(self._memoryNeed)
         worker.start()
         # The area is in the specification now; drop the selection made for
         # it in the preview (it is also the selection of the project layer).
@@ -4930,27 +5264,49 @@ class LandscapeExplorerDialog(QDialog):
         the notice says it can be larger. Returns whether to go on.
         """
 
+        self._memoryNeed = None
         estimate = _dem_size_estimate(specification)
         if estimate is None:
             return True
         area_km2, cells = estimate
+        outputs = specification.get("outputs", ())
+        frame_cells = cells / (WATERSHED_WIDEN ** 2) if "watershed" in outputs else cells
+        # Memory QGIS takes on top of what it uses now (also the meter's line).
+        need = memory.analysis_need(outputs, cells, frame_cells)
+        self._memoryNeed = need
+        short, available = memory.too_much(need)
         # The thresholds are areas of a 0.5 m DEM, compared as cell counts.
         reference_cells = 1_000_000.0 / (DEM_NOTICE_REFERENCE_CELL_M ** 2)
-        if cells < DEM_NOTICE_KM2 * reference_cells:
+        if available is None:
+            # Memory cannot be read here: by the size of the DEM alone.
+            strong = cells >= DEM_STRONG_NOTICE_KM2 * reference_cells
+        else:
+            strong = short
+        if not strong and cells < DEM_NOTICE_KM2 * reference_cells:
             return True
-        strong = cells >= DEM_STRONG_NOTICE_KM2 * reference_cells
         size_gb = cells * DEM_BYTES_PER_CELL / 1e9
 
         box = QMessageBox(self)
         use_plugin_font(box)
         box.setIcon(QMessageBox.Icon.Critical if strong else QMessageBox.Icon.Warning)
-        box.setWindowTitle(tr("Large DEM", "大きなDEM"))
+        box.setWindowTitle(
+            tr("Not enough memory", "メモリ不足") if short else tr("Large DEM", "大きなDEM")
+        )
         box.setText(tr(
             "The DEM to read is about {} GB (area about {} km²).",
             "読み込むDEMは約{} GBです（範囲 約{} km²）。",
         ).format(_format_gb(size_gb), "{:,.0f}".format(area_km2)))
         lines = []
-        if strong:
+        if available is not None:
+            lines.append(tr(
+                "The analysis is expected to take about {} GB more memory at its peak; "
+                "about {} GB is free now.",
+                "この解析では、一番多いときでメモリを約{} GB多く使う見込みです。"
+                "いま空いているメモリは約{} GBです。",
+            ).format(_format_gb(need / 1e9), _format_gb(available / 1e9)))
+        if short:
+            lines.append(_memory_risk_text())
+        elif strong:
             lines.append(tr(
                 "Memory may run short and QGIS or the PC may become unstable.",
                 "メモリが足りなくなり、QGISやPCが不安定になるおそれがあります。",
@@ -4982,6 +5338,32 @@ class LandscapeExplorerDialog(QDialog):
         _keep_message_lines(box)
         return box.exec() == QMessageBox.StandardButton.Ok
 
+    def _ask_memory(self, need, available):
+        """Before the heaviest step (the analysis waits): free memory is short."""
+        worker = self._terrainWorker
+        if worker is None:
+            return
+        box = QMessageBox(self)
+        use_plugin_font(box)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle(tr("Not enough memory", "メモリ不足"))
+        box.setText(tr(
+            "The analysis is paused: its next step needs about {} GB more memory, "
+            "and about {} GB is free now.",
+            "解析を一時停止しています。次の処理でメモリを約{} GB多く使う見込みですが、"
+            "いま空いているメモリは約{} GBです。",
+        ).format(_format_gb(need / 1e9), _format_gb(available / 1e9)))
+        box.setInformativeText(_memory_risk_text() + "\n" + tr(
+            "Closing other programs frees memory. Stop the analysis?",
+            "ほかのアプリを閉じるとメモリが空きます。解析を中止しますか？",
+        ))
+        stop = box.addButton(tr("Stop", "中止"), QMessageBox.ButtonRole.RejectRole)
+        box.addButton(tr("Continue", "続行"), QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(stop)
+        _keep_message_lines(box)
+        box.exec()
+        worker.answer_memory(box.clickedButton() is not stop)
+
     def _terrain_specification(self):
         project_directory = QgsProject.instance().absolutePath()
         if not project_directory:
@@ -5009,14 +5391,25 @@ class LandscapeExplorerDialog(QDialog):
             outputs.append("contours")
         if self.watershedCheck.isEnabled() and self.watershedCheck.isChecked():
             outputs.append("watershed")
+        option = self._regionalOption
+        regional_option = (
+            option["key"] if option is not None and self.regionalCheck.isEnabled()
+            and self.regionalCheck.isChecked() else None
+        )
         if not outputs:
             raise ValueError(
                 tr("Choose at least one analysis output.", "解析出力を1つ以上選択してください。")
             )
 
         source_key = self._dem_source_key() or dem_sources.DEFAULT_KEY
+        # The QLAE folder: the kept source's own key, read offline.
+        offline_store = source_key == "qlae_folder"
+        if offline_store:
+            source_key = self._kept_source_key()
+            if not source_key:
+                raise ValueError(self.demSourceNote.text())
         source_kind = source_key.partition(":")[0]
-        if not self._dem_source_available():
+        if not offline_store and not self._dem_source_available():
             raise ValueError(self.demSourceNote.text() or tr(
                 "This DEM source cannot be used here.",
                 "この取得元はここでは使えません。",
@@ -5044,6 +5437,10 @@ class LandscapeExplorerDialog(QDialog):
             "plugin_version": _plugin_version(),
             "source_key": source_key,
             "source_kind": source_kind,
+            "offline_store": offline_store,
+            # The country's regional analysis chosen (terrain/sources/:
+            # OPTION), done by its own route; None when not chosen.
+            "regional_option": regional_option,
             "source_path": source_path,
             "source_name": source_name,
             "outputs": outputs,
@@ -5068,6 +5465,8 @@ class LandscapeExplorerDialog(QDialog):
                 area_box.xMaximum(), area_box.yMaximum(),
             ],
             "aoi_crs_wkt": gdal_wkt(crs),
+            # Folder chosen to keep fetched DEM tiles ("": this QGIS run only).
+            "dem_store_dir": dem_store.chosen_folder(),
         }
 
     def _current_preview_view(self):
@@ -5176,15 +5575,21 @@ class LandscapeExplorerDialog(QDialog):
         return None if extent.isEmpty() else QgsRectangle(extent)
 
     def _show_terrain_message(self, message):
+        # A second line comes from work running beside the steps.
         if is_japanese():
-            message = _japanese_terrain_message(message)
+            message = "\n".join(_japanese_terrain_message(line) for line in message.split("\n"))
         self.resultEdit.setPlainText(message)
 
     def _terrain_finished(self, result, cancelled, error):
-        worker = self._terrainWorker
+        # The worker is deleted once its thread has ended (finished, see
+        # _run_analysis): it still runs a moment after telling it is done
+        # (releasing a large DEM can take a while), and Qt stops QGIS when a
+        # running thread is destroyed.
         self._terrainWorker = None
-        if worker is not None:
-            worker.deleteLater()
+        self.memoryMeter.stop()
+        # The fetch may have brought a coverage mesh up to date.
+        self._coverageView.forget()
+        self._update_coverage_mesh()
         self.runButton.setText(tr("Run", "実行"))
         self._style_run_button(running=False)
         self.runButton.setDefault(True)
@@ -5210,7 +5615,11 @@ class LandscapeExplorerDialog(QDialog):
         self._refresh_saved_analyses(package_path)
         self._add_package_layers(package_path, manifest)
         self._overwritePackagePath = None
-        fallback = _coverage_gap_text(manifest) + _grass_fallback_text(manifest)
+        fallback = (
+            _coverage_gap_text(manifest) + _grass_fallback_text(manifest)
+            + _tile_reuse_text(manifest) + _geopdf_dem_missing_text(manifest)
+            + _regional_text(manifest)
+        )
         removed = result.get("edited_dem_removed")
         if removed:
             # The placed DEM now lives in the analysis ZIP only.
@@ -5408,6 +5817,7 @@ class LandscapeExplorerDialog(QDialog):
                 return None
             layer.setCustomProperty("qlae/package_path", os.path.abspath(package_path))
             layer.setCustomProperty("qlae/session_managed", True)
+            layer.setCustomProperty(OUTPUT_KEY_PROPERTY, member_key)
             if style is not None:
                 style(layer)
             project.addMapLayer(layer, False)
@@ -5434,6 +5844,7 @@ class LandscapeExplorerDialog(QDialog):
             # After the style: loading a QML replaces the custom properties.
             layer.setCustomProperty("qlae/package_path", os.path.abspath(package_path))
             layer.setCustomProperty("qlae/session_managed", True)
+            layer.setCustomProperty(OUTPUT_KEY_PROPERTY, member_key)
             project.addMapLayer(layer, False)
             node = terrain_group.addLayer(layer)
             node.setItemVisibilityChecked(True)
@@ -5447,10 +5858,77 @@ class LandscapeExplorerDialog(QDialog):
         add("cs_map", tr("CS Map", "CS立体図"), terrain_group, True)
         # The DEM is input data, not a result: its own group below.
         data_group = analysis_group.addGroup(tr("Data", "データ"))
-        add("dem", tr("DEM", "DEM"), data_group, False)
-        data_group.setExpanded(False)
+        dem_layer = add("dem", tr("DEM", "DEM"), data_group, False)
+        if dem_layer is not None:
+            # Its credit, with the survey years where known, in the layer's
+            # metadata (shown in its properties).
+            _set_layer_rights(dem_layer, _dem_credit_with_years(manifest.get("source") or {}))
+        # Open: it can also hold the regional orthophoto for the base map.
+        data_group.setExpanded(True)
+        self._add_regional_layers(package_path, manifest, analysis_group, data_group)
         analysis_group.setExpanded(True)
         self.previewCanvas.refresh()
+
+    def _add_regional_layers(self, package_path, manifest, analysis_group, data_group):
+        """The regional analysis's layers (its route listed them in the
+        manifest): its maps in a group of their own, "Regional analysis", at
+        the top of the analysis (it carries the regional mark: analysis
+        management lists it in its right-hand column); the layers there for
+        the base map (an orthophoto) in the basic Data group above the DEM,
+        not drawn."""
+        regional = manifest.get("regional") or {}
+        layers = regional.get("layers") or []
+        if not layers:
+            return
+        project = QgsProject.instance()
+        group = None
+        for item in layers:
+            source = packages.vsi_path(package_path, item["member"])
+            if item.get("kind") == "vector":
+                layer = QgsVectorLayer(
+                    source + ("|layername=" + item["layer"] if item.get("layer") else ""),
+                    tr(*item["name"]), "ogr")
+            else:
+                layer = QgsRasterLayer(source, tr(*item["name"]))
+            if not layer.isValid():
+                continue
+            if item.get("style"):
+                _load_packaged_style(layer, package_path, item["style"])
+            # After the style: loading a QML replaces the custom properties.
+            layer.setCustomProperty("qlae/package_path", os.path.abspath(package_path))
+            layer.setCustomProperty("qlae/session_managed", True)
+            if item.get("excludes"):
+                # A basic layer it is shown instead of (analysis management
+                # ticks only one of the two).
+                layer.setCustomProperty(EXCLUDES_PROPERTY, item["excludes"])
+            if item.get("legend_page"):
+                # A legend too long for the page with the map: a print layout
+                # gives it a page of its own.
+                layer.setCustomProperty(LEGEND_PAGE_PROPERTY, True)
+            if item.get("credit"):
+                # Its credit, for a print layout with it on the map, and in
+                # the layer's metadata (with the year of the data).
+                layer.setCustomProperty(LAYER_CREDIT_PROPERTY, json.dumps(list(item["credit"])))
+                _set_layer_rights(layer, tr(*item["credit"]))
+            project.addMapLayer(layer, False)
+            if item.get("role") in ("base_map", "data"):
+                # Data (the DSM), or there for the base map (an orthophoto,
+                # chosen in the preview's base map list, not one of the
+                # layers to tick): in the Data group above the DEM.
+                layer.setCustomProperty(REGIONAL_DATA_PROPERTY, True)
+                if item["role"] == "base_map":
+                    layer.setCustomProperty(BASE_MAP_ONLY_PROPERTY, True)
+                node = data_group.insertLayer(0, layer)
+                node.setItemVisibilityChecked(False)
+            else:
+                if group is None:
+                    group = analysis_group.insertGroup(0, tr("Regional analysis", "地域の解析"))
+                    group.setCustomProperty(REGIONAL_GROUP_PROPERTY, True)
+                node = group.addLayer(layer)
+                # Always off at first (in the layer panel, so in analysis
+                # management too), whatever the route recorded.
+                node.setItemVisibilityChecked(False)
+            node.setExpanded(False)
 
     def _bring_to_front(self):
         """Return attention to the analysis window when a result is ready.
@@ -5536,6 +6014,8 @@ class LandscapeExplorerDialog(QDialog):
             "was_maximized": self.isMaximized(),
             "was_minimized": self.isMinimized(),
             "dem_source": self._dem_source_key(),
+            "kept_source": self._kept_source_key() or getattr(self, "_keptSourceWanted", ""),
+            "regional_option_checked": self.regionalCheck.isChecked(),
             "analysis_name": self.analysisNameEdit.text(),
             "saved_analysis_path": self.savedAnalysisCombo.currentData(),
             "outputs": {
@@ -5577,6 +6057,8 @@ class LandscapeExplorerDialog(QDialog):
         if dem_source and ":" not in dem_source:
             # State saved before the grouped source list.
             dem_source = dem_sources.key_from_legacy(dem_source, state.get("gsi_dataset"))
+        self._keptSourceWanted = state.get("kept_source") or ""
+        self.regionalCheck.setChecked(bool(state.get("regional_option_checked", True)))
         self._set_dem_source(dem_source)
         self.analysisNameEdit.setText(state.get("analysis_name", ""))
         outputs = state.get("outputs", {})
@@ -5645,10 +6127,27 @@ class LandscapeExplorerDialog(QDialog):
     def cleanup(self, clear_analysis_layers=False):
         if clear_analysis_layers:
             self._clear_session_analysis_layers()
-        if self._terrainWorker is not None:
-            self._terrainWorker.cancel()
-            self._terrainWorker.wait(5000)
+        self._coverageView.cleanup()
+        worker = self._terrainWorker
+        if worker is not None:
             self._terrainWorker = None
+            # This window is going: the worker no longer reports to it.
+            for signal in (worker.message, worker.done,
+                           worker.needs_memory, worker.short_of_memory):
+                try:
+                    signal.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+            worker.cancel()
+            if not worker.wait(5000):
+                # Still in a step that cannot stop at once (a large CS Map,
+                # say): keep it apart from the window until its thread ends
+                # (it is deleted then, see _run_analysis). Destroying a
+                # running thread with the window would stop QGIS.
+                worker.setParent(None)
+                _RUNNING_WORKERS.add(worker)
+                worker.finished.connect(lambda w=worker: _RUNNING_WORKERS.discard(w))
+            self.memoryMeter.stop()
         self._aSeriesLayoutTimer.stop()
         self._windowInteractionTimer.stop()
         self._windowStateTimer.stop()
@@ -5680,6 +6179,7 @@ class LandscapeExplorerDialog(QDialog):
                 pass
         self.previewRubber.reset(Qgis.GeometryType.Polygon)
         self.localDemRubber.reset(Qgis.GeometryType.Polygon)
+        self.regionRubber.reset(Qgis.GeometryType.Line)
         self.previewCanvas.setLayers([])
         for source_id in list(self._tileCopyWatches):
             self._unwatch_tile_source(source_id)
@@ -6074,6 +6574,11 @@ WINDOW_GEOMETRY_KEY = "qlae/window_geometry"
 WINDOW_MAXIMIZED_KEY = "qlae/window_maximized"
 
 PRINT_LAYOUT_NAME = "Quick Landscape Analysis Explorer"
+# A regional layer's credit ([en, ja] as JSON): a print layout lists it when
+# the layer is on its map.
+LAYER_CREDIT_PROPERTY = "qlae/credit"
+# A regional layer whose legend a print layout puts on a page of its own.
+LEGEND_PAGE_PROPERTY = "qlae/legend_page"
 
 # Image export: (file dialog filter, extension, QgsMapRendererTask format).
 IMAGE_FORMATS = (
@@ -6136,7 +6641,7 @@ def _name_taken_text():
 
 
 def make_print_layout(parent, iface, name, landscape, layers, legend_layers, extent,
-                      crs, description, credits, summary):
+                      crs, description, credits, summary, base_map=None):
     """Ask once, then make the plugin's one print layout and open it.
 
     Used by the Print layout button and by the layer panel menu of exported
@@ -6173,7 +6678,7 @@ def make_print_layout(parent, iface, name, landscape, layers, legend_layers, ext
     try:
         layout = _build_print_layout(
             name, landscape, layers, legend_layers, extent, crs,
-            description, credits, summary,
+            description, credits, summary, base_map,
         )
     except Exception as error:  # noqa: BLE001 - keep the old layout
         return tr(
@@ -6354,6 +6859,58 @@ _PROVIDER_COUNTRIES = {
 }
 
 
+def _set_layer_rights(layer, text):
+    """The layer's credit as the rights in its metadata (layer properties)."""
+    from qgis.core import QgsLayerMetadata
+
+    if not text:
+        return
+    metadata = layer.metadata() if layer.metadata() is not None else QgsLayerMetadata()
+    metadata.setRights([text])
+    layer.setMetadata(metadata)
+
+
+def _dem_credit_with_years(source):
+    """The DEM's credit line, with its survey years where the source gives
+    them (AHN4: 2020-2022)."""
+    credit = _dem_credit(source) if source else ""
+    years = [str(year) for year in source.get("survey_years") or ()]
+    if credit and years:
+        credit += tr(" (surveyed {})", "（{}年の測量）").format(tr(", ", "・").join(years))
+    return credit
+
+
+def _draws_within(layer, extent, crs):
+    """Whether a project layer draws something within ``extent`` (in
+    ``crs``): a feature there (vector), or its extent meeting it (a raster
+    file). Web layers (tiles, WMS) are taken as drawing: what they hold
+    there is not known here."""
+    try:
+        transform = QgsCoordinateTransform(crs, layer.crs(), QgsProject.instance())
+        area = transform.transformBoundingBox(extent)
+    except Exception:  # noqa: BLE001 - when in doubt, credited
+        return True
+    if layer.type() == Qgis.LayerType.Vector:
+        request = QgsFeatureRequest().setFilterRect(area).setLimit(1)
+        request.setNoAttributes()
+        return next(iter(layer.getFeatures(request)), None) is not None
+    if layer.type() == Qgis.LayerType.Raster and layer.providerType() == "gdal":
+        return layer.extent().intersects(area)
+    if "cyberjapandata.gsi.go.jp" in layer.source():
+        # GSI tiles are Japan's: credited only for a map in Japan (the same
+        # world map as the region shown at the top of the window).
+        try:
+            to84 = QgsCoordinateTransform(
+                crs, QgsCoordinateReferenceSystem("EPSG:4326"), QgsProject.instance())
+            box = to84.transformBoundingBox(extent)
+        except Exception:  # noqa: BLE001 - when in doubt, credited
+            return True
+        near = world_country.touches_country(
+            "JP", (box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum()))
+        return near is not False
+    return True
+
+
 def _layer_credit(layer):
     """Credit of a project layer: its metadata rights, or GSI tiles from the URL."""
 
@@ -6368,19 +6925,80 @@ def _layer_credit(layer):
     return ""
 
 
-def _layout_credits(manifest, layers, analysis_layers):
+def _layout_credits(manifest, layers, analysis_layers, all_regional=False,
+                    extent=None, crs=None):
+    """The credits of a print layout: the DEM's, those of the regional
+    analysis's layers on the map (``all_regional``: all of them, for a
+    record made before the layers are chosen), and those of the project's
+    layers on the map that draw something within ``extent`` (in ``crs``)
+    there (a Japanese coastline on a Dutch map draws nothing)."""
     lines = []
     source = (manifest or {}).get("source", {}) or {}
     if source:
         lines.append(tr("DEM: {}", "DEM：{}").format(_dem_credit(source)))
+    regional = (manifest or {}).get("regional") or {}
+    if all_regional:
+        credits = [regional.get("credit")] + list(regional.get("credits") or [])
+    else:
+        credits = []
+        for layer in layers:
+            stored = layer.customProperty(LAYER_CREDIT_PROPERTY, "")
+            if stored:
+                try:
+                    credits.append(json.loads(stored))
+                except ValueError:
+                    pass
+    for credit in credits:
+        if credit:
+            text = tr(*credit) if isinstance(credit, (list, tuple)) else credit
+            if text not in lines:
+                lines.append(text)
     analysis = set(analysis_layers)
     for layer in layers:
-        if layer in analysis:
+        if layer in analysis or layer.customProperty(LAYER_CREDIT_PROPERTY, ""):
+            continue
+        if extent is not None and crs is not None and not _draws_within(layer, extent, crs):
             continue
         credit = _layer_credit(layer)
         if credit and credit not in lines:
             lines.append(credit)
     return "\n".join(lines)
+
+
+def _summary_for_slope(summary, layer):
+    """The summary with the slope classes and mean of the slope layer on the
+    map, in that layer's own classes (as unchanged when not worked out)."""
+    try:
+        from .terrain.area_summary import slope_classes
+
+        function = layer.renderer().shader().rasterShaderFunction()
+        items = []
+        for item in function.colorRampItemList():
+            items.append((float(item.value), item.label, item.color.name()))
+        if not items:
+            return summary
+        if [label for _value, label, _color in items] == [
+                item["label"] for item in summary.get("slope_classes") or ()]:
+            # The classes the summary already counts (the basic slope): its
+            # numbers as they are.
+            return summary
+        package_path = layer.customProperty("qlae/package_path", "") or None
+        manifest = None
+        if package_path:
+            try:
+                manifest = packages.read_manifest(package_path)
+            except packages.PackageError:
+                manifest = None
+        source = layer.source().split("|")[0]
+        found = slope_classes(source, items, package_path, manifest)
+    except Exception as error:  # noqa: BLE001 - the summary as it was
+        _layout_log("Area summary: slope classes of {} not worked out: {}".format(layer.name(), error))
+        return summary
+    if not found:
+        return summary
+    summary = dict(summary)
+    summary["slope_classes"], summary["slope_mean"] = found
+    return summary
 
 
 def _safe_area_summary(package_path, manifest):
@@ -6508,7 +7126,7 @@ def _locator_picture(main_extent, crs):
 
 
 def _build_print_layout(name, landscape, layers, legend_layers, extent, crs,
-                        description, credits, summary=None):
+                        description, credits, summary=None, base_map=None):
     """A4 print layout: the A-series map with blocks of information.
 
     Portrait analysis: A4 landscape page, map on the left, the blocks on the
@@ -6652,9 +7270,23 @@ def _build_print_layout(name, landscape, layers, legend_layers, extent, crs,
     north.attemptResize(QgsLayoutSize(arrow_size, arrow_size))
     north.attemptMove(QgsLayoutPoint(arrow_x, arrow_y))
 
+    # The base map (``base_map``) is not weighed in whether colours mix, as
+    # before.
+    beside_base_map = [layer for layer in layers if layer is not base_map]
     # Slope on the map: its table. Otherwise the locator map (OSM), or the
-    # elevation bands when there is no locator layer.
-    show_slope = any("slope_deg" in layer.source() for layer in legend_layers)
+    # elevation bands when there is no locator layer. A slope whose colours
+    # mix with another layer's (the NAP colouring) has no table, as it has
+    # no legend: its colours would not match the map.
+    shown_slopes = [
+        layer for layer in legend_layers
+        if "slope_deg" in layer.source() and not _colour_mixing_layers(layer, beside_base_map)
+    ]
+    show_slope = bool(shown_slopes)
+    if summary and shown_slopes:
+        # The table in the classes of the slope on the map (the basic slope,
+        # or the regional one with its own classes), not those of the
+        # basic slope always.
+        summary = _summary_for_slope(summary, shown_slopes[0])
     locator_png = ""
     if summary and not show_slope:
         locator_png = _locator_picture(map_item.extent(), map_item.crs())
@@ -6697,11 +7329,23 @@ def _build_print_layout(name, landscape, layers, legend_layers, extent, crs,
     # Legend in the space left; two columns when one is too tall.
     legend = QgsLayoutItemLegend(layout)
     legend.setTitle(tr("Legend", "凡例"))
+    _small_legend(legend)
     legend.setLinkedMap(map_item)
     legend.setAutoUpdateModel(False)
     root = legend.model().rootGroup()
     root.clear()
+    own_pages = []
     for layer in legend_layers:
+        if layer.customProperty(LEGEND_PAGE_PROPERTY, False):
+            own_pages.append(layer)  # its legend on a page of its own, below
+            continue
+        covering = _colour_mixing_layers(layer, beside_base_map) if _mixes_colours(layer) else []
+        if covering:
+            # Its colours mix with theirs on the map (the NAP colouring over
+            # the slope): its legend would not match what is seen.
+            _layout_log("Legend: {} left out, drawn with {}".format(
+                layer.name(), ", ".join(other.name() for other in covering)))
+            continue
         # Hillshade, CS Map and DEM have no legend worth printing (bands).
         if layer.type() == Qgis.LayerType.Vector or "slope_deg" in layer.source():
             _add_legend_layer(legend, root.addLayer(layer), layer)
@@ -6766,7 +7410,148 @@ def _build_print_layout(name, landscape, layers, legend_layers, extent, crs,
             # No locator on the page after all: drop its credit line.
             locator_credit = tr("Locator map: {}", "位置図：{}").format(LOCATOR_CREDIT)
             credits_item.setText(credits_item.text().replace("\n" + locator_credit, ""))
+    for layer in own_pages:
+        covering = _colour_mixing_layers(layer, layers)
+        if covering:
+            # Its colours mix with theirs on the map: a legend of its own
+            # colours would not match what is seen.
+            _layout_log("Legend page: {} left out, drawn with {}".format(
+                layer.name(), ", ".join(other.name() for other in covering)))
+            continue
+        _add_legend_page(layout, map_item, layer, name, page_w, page_h, margin, text_label)
     return layout
+
+
+def _colour_mixing_layers(layer, layers):
+    """The other layers on the map whose colours mix with ``layer``'s (see
+    _mixes_colours)."""
+    return [other for other in layers if other is not layer and _mixes_colours(other)]
+
+
+def _mixes_colours(layer):
+    """Whether a layer's colours mix with others' on the map: rasters and
+    filled areas, but not the hillshade (it only darkens) nor lines, points
+    and areas drawn as outlines only (the catchments)."""
+    from qgis.core import QgsRenderContext
+
+    if layer.customProperty(OUTPUT_KEY_PROPERTY, "") == "hillshade" or (
+        os.path.basename(layer.source().split("|")[0]) == "hillshade.tif"
+    ):
+        return False
+    if layer.type() == Qgis.LayerType.Vector:
+        if layer.geometryType() != Qgis.GeometryType.Polygon:
+            return False
+        renderer = layer.renderer()
+        symbols = renderer.symbols(QgsRenderContext()) if renderer is not None else []
+        if symbols and all(not _symbol_fills(symbol) for symbol in symbols):
+            return False
+    return True
+
+
+def _symbol_fills(symbol):
+    """Whether a fill symbol paints its inside."""
+    for index in range(symbol.symbolLayerCount()):
+        symbol_layer = symbol.symbolLayer(index)
+        color = symbol_layer.fillColor() if hasattr(symbol_layer, "fillColor") else None
+        if symbol_layer.layerType() == "SimpleFill":
+            if symbol_layer.brushStyle() != Qt.BrushStyle.NoBrush and color is not None and color.alpha() > 0:
+                return True
+        elif symbol_layer.layerType() not in ("SimpleLine", "GeometryGenerator", "MarkerLine", "HashedLine"):
+            return True
+        elif symbol_layer.layerType() == "GeometryGenerator":
+            sub = symbol_layer.subSymbol()
+            if sub is not None and sub.type() == Qgis.SymbolType.Fill and _symbol_fills(sub):
+                return True
+    return False
+
+
+def _legend_keys_on_map(layer, map_item):
+    """The legend keys (rules) of the vector layer's features within the
+    layout map, or None when they cannot be worked out."""
+    from qgis.core import (
+        QgsCoordinateTransform,
+        QgsExpressionContextUtils,
+        QgsFeatureRequest,
+        QgsRenderContext,
+    )
+
+    renderer = layer.renderer() if hasattr(layer, "renderer") else None
+    if renderer is None:
+        return None
+    try:
+        transform = QgsCoordinateTransform(map_item.crs(), layer.crs(), QgsProject.instance())
+        extent = transform.transformBoundingBox(map_item.extent())
+        context = QgsRenderContext()
+        context.expressionContext().appendScopes(
+            QgsExpressionContextUtils.globalProjectLayerScopes(layer))
+        renderer = renderer.clone()
+        renderer.startRender(context, layer.fields())
+        keys = set()
+        request = QgsFeatureRequest().setFilterRect(extent)
+        for feature in layer.getFeatures(request):
+            context.expressionContext().setFeature(feature)
+            keys.update(renderer.legendKeysForFeature(feature, context))
+        renderer.stopRender(context)
+        return keys
+    except Exception as error:  # noqa: BLE001 - the whole legend then
+        _layout_log("Legend page: classes on the map not worked out: {}".format(error))
+        return None
+
+
+def _add_legend_page(layout, map_item, layer, name, page_w, page_h, margin, text_label):
+    """A page of its own for a long legend (the Dutch geomorphological map):
+    only the classes on the map, in as many columns as the page needs."""
+    from qgis.core import (
+        QgsLayoutItemLegend,
+        QgsLayoutItemPage,
+        QgsLayoutPoint,
+        QgsLayoutSize,
+        QgsLayoutUtils,
+        QgsLegendRenderer,
+    )
+
+    page = QgsLayoutItemPage(layout)
+    page.setPageSize(QgsLayoutSize(page_w, page_h))
+    layout.pageCollection().addPage(page)
+    index = layout.pageCollection().pageCount() - 1
+    title, title_h = text_label(
+        tr("Legend: {} ({})", "凡例：{}（{}）").format(layer.name(), name),
+        12, margin, margin, page_w - 2 * margin, bold=True,
+    )
+    title.attemptMove(QgsLayoutPoint(margin, margin), page=index)
+    legend = QgsLayoutItemLegend(layout)
+    legend.setTitle("")
+    _small_legend(legend)
+    legend.setLinkedMap(map_item)
+    legend.setAutoUpdateModel(False)
+    root = legend.model().rootGroup()
+    root.clear()
+    node = root.addLayer(layer)
+    _add_legend_layer(legend, node, layer)
+    # Only the classes of the features on the map (worked out here, so the
+    # columns are counted for them, not for all the classes).
+    shown = _legend_keys_on_map(layer, map_item)
+    if shown is not None:
+        from qgis.core import QgsLayerTreeModelLegendNode, QgsMapLayerLegendUtils
+
+        nodes = legend.model().layerLegendNodes(node)
+        keep = [
+            position for position, legend_node in enumerate(nodes)
+            if legend_node.data(QgsLayerTreeModelLegendNode.LegendNodeRoles.RuleKeyRole) in shown
+        ]
+        QgsMapLayerLegendUtils.setLegendNodeOrder(node, keep)
+        legend.model().refreshLayerLegend(node)
+    layout.addLayoutItem(legend)
+    top = margin + title_h + 3.0
+    legend.attemptMove(QgsLayoutPoint(margin, top), page=index)
+    room = page_h - margin - top
+    context = QgsLayoutUtils.createRenderContextForLayout(layout, None)
+    height = QgsLegendRenderer(legend.model(), legend.legendSettings()).minimumSize(context).height()
+    legend.setColumnCount(max(1, min(4, math.ceil(height / room))))
+    legend.setSplitLayer(True)
+    legend.adjustBoxSize()
+    _layout_log("Legend page: {}, {:.1f} mm in one column, {} column(s)".format(
+        layer.name(), height, legend.columnCount()))
 
 
 def _add_area_summary(layout, summary, x, y, width, bottom, text_label,
@@ -6789,9 +7574,12 @@ def _add_area_summary(layout, summary, x, y, width, bottom, text_label,
         return result
 
     rows = []
+    colors = []
     if show_slope:
         first_header = tr("Slope (°)", "傾斜（°）")
-        for color, item in zip(SLOPE_COLORS, summary["slope_classes"]):
+        for index, item in enumerate(summary["slope_classes"]):
+            color = item.get("color") or SLOPE_COLORS[min(index, len(SLOPE_COLORS) - 1)]
+            colors.append(color)
             label_cell = QgsTableCell(item["label"])
             label_cell.setBackgroundColor(QColor(color))
             rows.append([
@@ -6835,21 +7623,26 @@ def _add_area_summary(layout, summary, x, y, width, bottom, text_label,
         locator_w = locator_h * LOCATOR_SIZE_MM[0] / LOCATOR_SIZE_MM[1]
     if locator is not None and locator_h < 30.0:
         locator = None
-    # Fonts measure a little larger on some systems (Windows, QGIS 4: a
-    # table 0.3 mm too high was left out). Smaller type before leaving the
-    # table out, down to 6 pt.
-    if locator is None and rows and room < table_h:
-        for smaller in (7.0, 6.5, 6.0):
-            smaller_row, smaller_h = table_height(smaller)
-            if smaller_h <= room:
-                table_size, row_h, table_h = smaller, smaller_row, smaller_h
+    # Too high for the room (under the description on an A4 portrait
+    # page): the same table turned on its side, the classes across in three
+    # rows (classes, area, share), the whole width; smaller type only after
+    # that, down to 6 pt (fonts measure a little larger on some systems).
+    horizontal = False
+    if locator is None and rows and room < table_h and len(rows) <= HORIZONTAL_TABLE_CLASSES:
+        horizontal = True
+        table_w = width
+        for size in (7.5, 7.0, 6.5, 6.0):
+            row_h = table_height(size)[0]
+            table_size, table_h = size, row_h * 3 + 1.0
+            if table_h <= room:
                 break
     block_h = locator_h if locator is not None else (table_h if rows else 0.0)
     _layout_log(
         "Area summary: {}, {} rows, heading {:.1f} mm, numbers {:.1f} mm, "
         "row {:.2f} mm, table {:.1f} mm ({:g} pt), block {:.1f} mm, room {:.1f} mm".format(
             "locator map" if locator is not None
-            else ("slope table" if show_slope else "elevation table"),
+            else ("slope table" if show_slope else "elevation table")
+            + (" (across)" if horizontal else ""),
             len(rows), heading_h, numbers_h, row_h, table_h, table_size, block_h, room,
         )
     )
@@ -6869,17 +7662,46 @@ def _add_area_summary(layout, summary, x, y, width, bottom, text_label,
         return False
 
     try:
+        if horizontal:
+            rows = _across(rows, colors, first_header, text_format(table_size, bold=True))
         _add_summary_table(
-            layout, rows, first_header, x, y, table_w, table_h, text_format, table_size
+            layout, rows, first_header, x, y, table_w, table_h, text_format, table_size,
+            horizontal=horizontal,
         )
     except Exception as error:  # noqa: BLE001 - log, the rest of the layout stays
         _layout_log("Area summary: the table could not be made: {}".format(error))
     return False
 
 
+# Classes that still fit across a column of the page (with the row names).
+HORIZONTAL_TABLE_CLASSES = 8
+
+
+def _across(rows, colors, first_header, bold_format):
+    """The table's rows ([label, area, share] per class) turned on their
+    side: a row of the classes (coloured as on the map), one of the areas
+    and one of the shares, each led by its name in bold."""
+    from qgis.core import QgsTableCell
+
+    names = [first_header, tr("Area (ha)", "面積（ha）"), tr("Share (%)", "割合（%）")]
+    across = []
+    for index, name in enumerate(names):
+        head = QgsTableCell(name)
+        head.setTextFormat(bold_format)
+        line = [head]
+        for position, row in enumerate(rows):
+            cell = QgsTableCell(row[index].content())
+            if index == 0 and position < len(colors):
+                cell.setBackgroundColor(QColor(colors[position]))
+            line.append(cell)
+        across.append(line)
+    return across
+
+
 def _add_summary_table(layout, rows, first_header, x, y, table_w, table_h, text_format,
-                       size=7.5):
-    """The summary table in a frame at (x, y)."""
+                       size=7.5, horizontal=False):
+    """The summary table in a frame at (x, y); ``horizontal``: ``rows`` are
+    already turned on their side (see _across), shown without a header."""
     from qgis.core import (
         QgsLayoutFrame,
         QgsLayoutItemManualTable,
@@ -6891,19 +7713,31 @@ def _add_summary_table(layout, rows, first_header, x, y, table_w, table_h, text_
     table = QgsLayoutItemManualTable.create(layout)
     layout.addMultiFrame(table)
     table.setTableContents(rows)
-    table.setIncludeTableHeader(True)
-    table.setHeaders([
-        QgsLayoutTableColumn(first_header),
-        QgsLayoutTableColumn(tr("Area (ha)", "面積（ha）")),
-        QgsLayoutTableColumn(tr("Share (%)", "割合（%）")),
-    ])
-    table.setHeaderTextFormat(text_format(size, bold=True))
     table.setContentTextFormat(text_format(size))
-    table.setCellMargin(0.8)
-    table.setColumnWidths([table_w * 0.36, table_w * 0.32, table_w * 0.32])
+    margin = 0.8
+    table.setCellMargin(margin)
+    columns = len(rows[0])
+    # Column widths are for the text: the cell margins and the grid lines
+    # come on top. Take them off, so the table keeps to ``table_w``.
+    text_w = table_w - columns * 2 * margin - (columns + 1) * table.gridStrokeWidth()
+    if horizontal:
+        table.setIncludeTableHeader(False)
+        first = text_w * 0.2
+        other = (text_w - first) / (columns - 1)
+        table.setHeaders([QgsLayoutTableColumn("") for _column in range(columns)])
+        table.setColumnWidths([first] + [other] * (columns - 1))
+    else:
+        table.setIncludeTableHeader(True)
+        table.setHeaders([
+            QgsLayoutTableColumn(first_header),
+            QgsLayoutTableColumn(tr("Area (ha)", "面積（ha）")),
+            QgsLayoutTableColumn(tr("Share (%)", "割合（%）")),
+        ])
+        table.setHeaderTextFormat(text_format(size, bold=True))
+        table.setColumnWidths([text_w * 0.36, text_w * 0.32, text_w * 0.32])
     frame = QgsLayoutFrame(layout, table)
     frame.attemptMove(QgsLayoutPoint(x, y))
-    frame.attemptResize(QgsLayoutSize(table_w + 2.0, table_h))
+    frame.attemptResize(QgsLayoutSize(table_w, table_h))
     table.addFrame(frame)
     size = frame.sizeWithUnits()
     _layout_log(
@@ -6971,6 +7805,43 @@ def _text_height_mm(text, size, width, bold=False, inner=0.0):
         for line in text.split("\n")
     )
     return QgsLayoutUtils.fontHeightMM(font) * 1.25 * rows + 2 * inner + 1.0
+
+
+def _small_legend(legend):
+    """Legend type close to the description and the credits (QGIS's default
+    16 pt title and 12 pt entries made it as tall as the page and pushed out
+    the area summary), with smaller samples."""
+    from qgis.core import QgsLegendStyle
+
+    for style, size, bold in (
+        (QgsLegendStyle.Style.Title, 10.0, True),
+        (QgsLegendStyle.Style.Group, 8.0, True),
+        (QgsLegendStyle.Style.Subgroup, 8.0, True),
+        (QgsLegendStyle.Style.SymbolLabel, 7.5, False),
+    ):
+        legend_style = legend.style(style)
+        text_format = legend_style.textFormat()
+        font = text_format.font()
+        font.setBold(bold)
+        text_format.setFont(font)
+        text_format.setSize(size)
+        legend_style.setTextFormat(text_format)
+        legend.setStyle(style, legend_style)
+    # Closer rows (QGIS's default spacing is for 12 pt entries).
+    for style, top in (
+        (QgsLegendStyle.Style.Group, 2.0),
+        (QgsLegendStyle.Style.Subgroup, 2.0),
+        (QgsLegendStyle.Style.Symbol, 1.2),
+        (QgsLegendStyle.Style.SymbolLabel, 1.2),
+    ):
+        legend_style = legend.style(style)
+        legend_style.setMargin(QgsLegendStyle.Side.Top, top)
+        legend.setStyle(style, legend_style)
+    title = legend.style(QgsLegendStyle.Style.Title)
+    title.setMargin(QgsLegendStyle.Side.Bottom, 1.5)
+    legend.setStyle(QgsLegendStyle.Style.Title, title)
+    legend.setSymbolWidth(6.0)
+    legend.setSymbolHeight(3.0)
 
 
 def _add_legend_layer(legend, node, layer):
@@ -7052,6 +7923,10 @@ def _extract_analysis_files(package_path, manifest, folder):
         member for key, member in (manifest.get("outputs") or {}).items()
         if member and not key.endswith("_style")
     ]
+    # The regional analysis's files (a style-only layer reads a basic file).
+    for item in ((manifest.get("regional") or {}).get("layers") or []):
+        if item.get("member") and item["member"] not in members:
+            members.append(item["member"])
     os.makedirs(folder, exist_ok=True)
     written = {}
     with zipfile.ZipFile(package_path) as archive:
@@ -7111,6 +7986,8 @@ def _shown_in_layer_panel(layer):
 # Progress messages of the analysis job (English, from the worker thread) in
 # Japanese: fixed messages, then messages with numbers or names in them.
 _TERRAIN_MESSAGES_JA = {
+    "Preparing the kept DEM tiles...": "保存してあるDEMのタイルを準備しています…",
+    "Regional analysis...": "地域の解析をしています…",
     "Preparing DEM...": "DEMを準備しています…",
     "Creating hillshade...": "陰影起伏を作成しています…",
     "Creating slope...": "傾斜を作成しています…",
@@ -7134,6 +8011,11 @@ _TERRAIN_MESSAGES_JA = {
         "ラインラント＝プファルツ州のタイルの一覧を確認しています…",
 }
 _TERRAIN_PATTERNS_JA = (
+    (r"Orthophoto: (\d+)/(\d+) tiles, (.+) / (.+)", r"オルソフォト：\1/\2 枚、\3 / \4"),
+    (r"Orthophoto CIR: (\d+)/(\d+) tiles, (.+) / (.+)", r"赤外オルソフォト：\1/\2 枚、\3 / \4"),
+    (r"Geomorphological map \(whole country, first time only\): (.+) / (.+)",
+     r"地形分類図（全国、初回のみ）：\1 / \2"),
+    (r"Geomorphological map: unpacking\.\.\.", r"地形分類図：展開しています…"),
     (r"Combining the area… (\d+)%", r"範囲をまとめています… \1%"),
     (r"Combining the area \(repaired polygons\)… (\d+)%",
      r"範囲をまとめています（ポリゴンの形を直して）… \1%"),
@@ -7167,6 +8049,9 @@ def _japanese_terrain_message(message):
 
     if message in _TERRAIN_MESSAGES_JA:
         return _TERRAIN_MESSAGES_JA[message]
+    if message.startswith("DSM: "):
+        # The regional analysis's DSM, fetched like the DEM.
+        return "DSM：" + _japanese_terrain_message(message[len("DSM: "):])
     for pattern, replacement in _TERRAIN_PATTERNS_JA:
         match = re.fullmatch(pattern, message)
         if match:
@@ -7247,6 +8132,15 @@ def _terrain_error_text(error):
     if error == "package_exists":
         # Normally caught before running; the job's own check, worded.
         return _name_taken_text()
+    if error.startswith(DISK_FULL_ERROR + "\n"):
+        return _disk_full_text(error)
+    if error == NO_KEPT_TILES_ERROR:
+        return tr(
+            "The QLAE folder holds no tiles of this data over the analysis area. "
+            "The mesh on the preview shows where it has them.",
+            "QLAEフォルダに、解析範囲にかかるこのデータのタイルがありません。"
+            "プレビューの網目が、タイルのある範囲です。",
+        )
     if not is_japanese():
         return error
     if error in _TERRAIN_ERRORS_JA:
@@ -7256,6 +8150,111 @@ def _terrain_error_text(error):
         if match:
             return match.expand(replacement)
     return error
+
+
+def _tile_reuse_text(manifest):
+    """A line (with a leading newline) on the source tiles kept from earlier
+    analyses and used again, or "" when the source keeps none."""
+
+    source = (manifest or {}).get("source") or {}
+    reused = source.get("tiles_reused")
+    downloaded = source.get("tiles_downloaded")
+    if reused is None or downloaded is None:
+        return ""
+    if source.get("from_qlae_folder"):
+        return "\n" + tr(
+            "DEM tiles: {} from the QLAE folder.", "DEMのタイル：QLAEフォルダから {} 枚。"
+        ).format(reused)
+    if source.get("tile_store") == "folder":
+        where = tr("the chosen folder", "保存場所")
+    else:
+        where = tr("kept while QGIS runs", "QGISの起動中の一時保存")
+    return "\n" + tr(
+        "DEM tiles: {} reused, {} downloaded ({}).",
+        "DEMのタイル：再利用 {} 枚、取得 {} 枚（{}）。",
+    ).format(reused, downloaded, where)
+
+
+def _disk_full_text(error):
+    """The analysis stopped because a disk ran out of space (the error is
+    DISK_FULL_ERROR, then the folder, its free and its whole bytes)."""
+
+    lines = error.split("\n")
+    folder = lines[1] if len(lines) > 1 else ""
+    try:
+        free_gb, total_gb = float(lines[2]) / 1e9, float(lines[3]) / 1e9
+    except (IndexError, ValueError):
+        free_gb = total_gb = None
+    text = tr(
+        "The disk ran out of space in {}",
+        "{} のディスクの空きが足りなくなりました",
+    ).format(folder)
+    if total_gb is not None:
+        text += tr(
+            " (free {} GB of {} GB)",
+            "（空き {} GB／全体 {} GB）",
+        ).format(_format_gb(free_gb), _format_gb(total_gb))
+    text += tr(".", "。") + "\n" + tr(
+        "Make the area smaller, or free some space there.",
+        "範囲を狭くするか、そこの空きを増やしてください。",
+    )
+    if os.path.exists("/.flatpak-info") and folder == tempfile.gettempdir() and total_gb:
+        text += "\n" + tr(
+            "In the Flatpak QGIS, this temporary folder is held in memory and "
+            "holds about {} GB at most.",
+            "Flatpak版のQGISでは、この一時フォルダーはメモリ上にあり、"
+            "約{} GBまでしか使えません。",
+        ).format(_format_gb(total_gb))
+    return text
+
+
+def _regional_text(manifest):
+    """A line (with a leading newline) on the regional analysis, or ""."""
+
+    regional = (manifest or {}).get("regional") or {}
+    if not regional:
+        return ""
+    name = tr(*regional.get("name", ("Regional analysis", "地域の解析")))
+    if regional.get("error"):
+        return "\n" + tr(
+            "{} could not be made (see the QGIS log).",
+            "{}は作成できませんでした（QGISのログを参照）。",
+        ).format(name)
+    text = "\n" + tr(
+        "{} was added (Regional, in analysis management).",
+        "{}を追加しました（解析管理の「地域」）。",
+    ).format(name)
+    names = {
+        "orthophoto": tr("the orthophoto", "オルソフォト"),
+        "cir": tr("the CIR orthophoto", "赤外オルソフォト"),
+        "dsm": tr("the DSM (object height)", "DSM（地物の高さ）"),
+        "canopy": tr("the object height (trees and buildings)", "地物の高さ（樹木・建物）"),
+        "filled_dem": tr("the DEM with its holes filled", "DEM（穴埋め）"),
+        "gmm": tr("the geomorphological map", "地形分類図"),
+        "prefetch": tr("the regional data", "地域のデータ"),
+    }
+    for key, error in (regional.get("errors") or {}).items():
+        text += "\n" + tr("{} could not be made: {}", "{}は作成できませんでした：{}").format(
+            names.get(key, key), error)
+    return text
+
+
+def _geopdf_dem_missing_text(manifest):
+    """A line (with a leading newline) when the DEM for the GeoPDF was not
+    made (analyses/terrain.py: geopdf_dem_missing), or ""."""
+
+    reason = (manifest or {}).get("geopdf_dem_missing")
+    if not reason:
+        return ""
+    because = {
+        "network": tr("the network could not be reached", "ネットワークに接続できないため"),
+        "too_wide": tr("its gaps could not be filled (the area is too wide)",
+                       "補完できないため（範囲が広すぎます）"),
+    }.get(reason, tr("of an error (see the QGIS log)", "エラーのため（QGISのログを参照）"))
+    return "\n" + tr(
+        "{} was not made because {}.",
+        "{}は{}作成できませんでした。",
+    ).format(result_writer.GEOPDF_DEM_NAME, because)
 
 
 def _coverage_gap_text(manifest):
@@ -7291,12 +8290,34 @@ def _grass_fallback_text(manifest):
     )
 
 
+# Analyses still running when their window was closed: held here until their
+# thread ends (see cleanup()).
+_RUNNING_WORKERS = set()
+
+
+def _memory_risk_text():
+    """What may happen when memory runs out, for this OS."""
+    if sys.platform.startswith("linux"):
+        return tr(
+            "If memory runs out, the system closes QGIS without a message, "
+            "and unsaved work is lost.",
+            "メモリが足りなくなると、システムがQGISを何も表示せずに終了させ、"
+            "保存していない作業は失われます。",
+        )
+    return tr(
+        "If memory runs out, the PC may become very slow, or QGIS may stop "
+        "with an error or close.",
+        "メモリが足りなくなると、PCが極端に遅くなるか、QGISがエラーで止まる・"
+        "終了するおそれがあります。",
+    )
+
+
 def _watershed_status_text():
     return tr(
-        "To get catchments right, a wider area is fetched and every analysis is run on it,\n"
-        "then cut to the needed area. The analysis covers more than the area you chose.",
-        "流域を正確に出すために、範囲を広く取得して全解析を実行し、その後必要な範囲で切り取ります。\n"
-        "ユーザーが指定した範囲より広く解析します。",
+        "To get catchments right, a wider area is fetched and the catchments are computed on it,\n"
+        "then cut to the needed area. The DEM is read wider than the area you chose.",
+        "流域を正確に出すために、範囲を広く取得して流域を計算し、その後必要な範囲で切り取ります。\n"
+        "ユーザーが指定した範囲より広くDEMを読み込みます。",
     )
 
 
@@ -7446,36 +8467,12 @@ def _load_packaged_style(layer, package_path, member):
 
 
 def _dem_source_note(key):
-    """Short note under the DEM source (kept to two lines in the section)."""
+    """Short note under the DEM source, from the country files (terrain/
+    sources/): at most three lines, each fitting the width beside the
+    labels without wrapping."""
 
-    notes = {
-        "vs_lp": ("0.5 m tiles; large areas take time.",
-                  "0.5 mタイル。広い範囲は時間がかかります。"),
-        "nagano_sabo": ("0.5 m tiles; large areas take time.",
-                        "0.5 mタイル。広い範囲は時間がかかります。"),
-        "nagano_rinmu": ("0.5 m tiles; large areas take time.",
-                         "0.5 mタイル。広い範囲は時間がかかります。"),
-        "ahn_dtm": ("0.5 m; the PDOK service can be slow.",
-                    "0.5 m。PDOKのサービスは遅いことがあります。"),
-        "ign_mnt": ("0.5 m; not all of France is covered yet.",
-                    "0.5 m。フランス全土はまだ覆われていません。"),
-        "linz_dem": ("1 m; the AWS copy may lag LINZ releases.",
-                     "1 m。AWS上の複製は最新版より遅れることがあります。"),
-        "rlp_dgm1": ("1 m tiles; the newest survey of each tile is used.",
-                     "1 mタイル。タイルごとに最新の測量を使います。"),
-        "by_dgm1": ("1 m tiles; large areas take time.",
-                    "1 mタイル。広い範囲は時間がかかります。"),
-        "terrarium:2m": ("Global tiles for small areas. Detail differs by region.",
-                         "解像度は地域で差があります。"),
-        "terrarium:5m": ("Global tiles. Detail differs by region.",
-                         "解像度は地域で差があります。"),
-        "terrarium:10m": ("Global tiles for wide areas. Detail differs by region.",
-                          "解像度は地域で差があります。"),
-        "gsi:1m": ("Laser survey areas only.",
-                   "航空レーザ測量の範囲だけです。"),
-    }
-    note = notes.get(key)
-    return tr(*note) if note else ""
+    lines = sources.get(key).get("note") or ()
+    return "\n".join(tr(*line) for line in lines)
 
 
 _PREVIEW_NAVIGATION_EVENTS = (

@@ -47,6 +47,34 @@ def _countries():
     return _cache["countries"]
 
 
+def country_wkt(code):
+    """The shape of a country (ISO code) in WGS84 as WKT, or ""."""
+
+    countries = _countries()
+    if countries is None:
+        return ""
+    _source, layer, code_index, _name_index = countries
+    shapes = []
+    try:
+        layer.ResetReading()
+        for feature in layer:
+            if feature.GetField(code_index) == code and feature.GetGeometryRef() is not None:
+                shapes.append(feature.GetGeometryRef().ExportToWkt())
+        layer.ResetReading()
+    except Exception:  # noqa: BLE001 - no shape then
+        return ""
+    if len(shapes) == 1:
+        return shapes[0]
+    if not shapes:
+        return ""
+    from osgeo import ogr
+
+    union = ogr.CreateGeometryFromWkt(shapes[0])
+    for wkt in shapes[1:]:
+        union = union.Union(ogr.CreateGeometryFromWkt(wkt))
+    return union.ExportToWkt()
+
+
 def country_at(lon, lat):
     """Return (ISO code, English name) of the country at a WGS84 point."""
 

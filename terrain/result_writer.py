@@ -184,6 +184,13 @@ def save_geopdf_dem(dem_path, out_path, crs_wkt, bounds=None, cell=None, fill=No
         try:
             dem_gaps.fill_for_3d(out_path, check, source=fill)
             return out_path
+        except dem_gaps.FillIncomplete:
+            # Not made: the caller tells why (no network, too wide).
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+            raise
         except Exception as error:  # noqa: BLE001 - cancel goes on; else the simple fill
             if type(error).__name__ in ("TerrainJobCancelled", "Cancelled"):
                 raise
