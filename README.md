@@ -142,9 +142,9 @@ terrain in 3D.
   analysis, is kept in the same analysis ZIP (`regional/`), and is listed in
   analysis management in a column of its own (Regional: Analysis, and Data
   for the layers there for the base map). What each country adds, with its
-  data sources and credits, is on its own page:
+  data sources and credits, is described on a page of its own.
 
-  - [The Netherlands](docs/regions/netherlands.md)
+  Details: [The Netherlands](docs/regions/netherlands.md)
 
   The two Nagano index files in `terrain/data/` were made by the author
   from public data on
