@@ -631,9 +631,6 @@ class LandscapeExplorerDialog(QDialog):
         # and restoring to it then leaves the window full-screen sized.
         self._lastNormalGeometry = None
         self._restoringFromScreenState = False
-        # Set while restore_state puts the area mode back (see
-        # _extent_mode_chosen).
-        self._restoringAreaMode = False
         self._finishingWindowInteraction = False
         self._previewFrozenForWindowChange = False
         self._previewResizeTimer = QTimer(self)
@@ -725,8 +722,6 @@ class LandscapeExplorerDialog(QDialog):
         self.previewCanvas.extentsChanged.connect(self._queue_outline_for_view)
         self.polygonAreaRadio.toggled.connect(self._area_mode_changed)
         self.mapExtentAreaRadio.toggled.connect(self._area_mode_changed)
-        # After _area_mode_changed, which makes the catchment check available.
-        self.mapExtentAreaRadio.toggled.connect(self._extent_mode_chosen)
         # Only a user switch clears the selection (not restoring a state).
         self.mapExtentAreaRadio.clicked.connect(self._clear_area_selection_for_extent)
         self.watershedCheck.toggled.connect(self._watershed_toggled)
@@ -3303,6 +3298,8 @@ class LandscapeExplorerDialog(QDialog):
     def _watershed_toggled(self, checked):
         if checked:
             self.resultEdit.setPlainText(_watershed_status_text())
+        elif self.resultEdit.toPlainText() in _WATERSHED_STATUS_TEXTS:
+            self.resultEdit.clear()
 
     def _build_analysis_name_box(self):
         box = QGroupBox(tr("Analysis name", "解析名"))
@@ -4515,17 +4512,6 @@ class LandscapeExplorerDialog(QDialog):
             self._activate_map_navigation()
         self._update_preview_selection_controls()
         self._update_preview_layers()
-
-    def _extent_mode_chosen(self, checked):
-        """Switching to the preview extent turns the catchment map on.
-
-        Catchments are offered only with the preview extent, so choosing it
-        is taken as wanting them; the check can still be cleared. Not when a
-        saved window state is put back (that keeps its own choice).
-        """
-
-        if checked and not self._restoringAreaMode and self.watershedCheck.isEnabled():
-            self.watershedCheck.setChecked(True)
 
     def _clear_area_selection_for_extent(self, *args):
         """Switching to the preview extent: keep the layer, drop its selection."""
@@ -6070,13 +6056,9 @@ class LandscapeExplorerDialog(QDialog):
         self.watershedCheck.setChecked(outputs.get("watershed", False))
         self.watershedCheck.blockSignals(False)
         self.selectedOnlyCheck.setChecked(state.get("selected_only", True))
-        self._restoringAreaMode = True
-        try:
-            self.mapExtentAreaRadio.setChecked(
-                state.get("area_mode", "polygon") == "map_extent"
-            )
-        finally:
-            self._restoringAreaMode = False
+        self.mapExtentAreaRadio.setChecked(
+            state.get("area_mode", "polygon") == "map_extent"
+        )
 
         project = QgsProject.instance()
         aoi = project.mapLayer(state.get("aoi_layer_id", ""))
@@ -8038,6 +8020,12 @@ _TERRAIN_PATTERNS_JA = (
     (r"Nagano DEM tile (\d+)/(\d+) \((.+?)\): downloading (.+) MB\.\.\.",
      r"長野県DEMタイル \1/\2（\3）：ダウンロードしています \4 MB…"),
     (r"Fetching (.+)… (\d+)/(\d+)", r"\1を取得しています… \2/\3"),
+    (r"DEM transfer: ([\d.]+) MB / calculating total; (\d+)/(\d+) downloaded, (\d+) reused, (\d+) active\.",
+     r"DEM受信：\1 MB／総量を計算中、取得 \2/\3 枚・再利用 \4 枚・取得中 \5 本"),
+    (r"DEM transfer: ([\d.]+) MB / about ([\d.]+) MB; (\d+)/(\d+) downloaded, (\d+) reused, (\d+) active\.",
+     r"DEM受信：\1／約\2 MB、取得 \3/\4 枚・再利用 \5 枚・取得中 \6 本"),
+    (r"DEM transfer: ([\d.]+) MB / ([\d.]+) MB; (\d+)/(\d+) downloaded, (\d+) reused, (\d+) active\.",
+     r"DEM受信：\1／\2 MB、取得 \3/\4 枚・再利用 \5 枚・取得中 \6 本"),
     (r"Checking where (.+) has data…", r"\1のデータがある範囲を確認しています…"),
     (r"Reading elevation data… (\d+)%", r"標高データを読み込んでいます… \1%"),
     (r"Reading (.+) \((\d+) tile\(s\)\)…", r"\1を読み込んでいます（\2タイル）…"),
@@ -8312,13 +8300,16 @@ def _memory_risk_text():
     )
 
 
+_WATERSHED_STATUS_TEXTS = (
+    "To get catchments right, a wider area is fetched and the catchments are computed on it,\n"
+    "then cut to the needed area. The DEM is read wider than the area you chose.",
+    "流域を正確に出すために、範囲を広く取得して流域を計算し、その後必要な範囲で切り取ります。\n"
+    "ユーザーが指定した範囲より広くDEMを読み込みます。",
+)
+
+
 def _watershed_status_text():
-    return tr(
-        "To get catchments right, a wider area is fetched and the catchments are computed on it,\n"
-        "then cut to the needed area. The DEM is read wider than the area you chose.",
-        "流域を正確に出すために、範囲を広く取得して流域を計算し、その後必要な範囲で切り取ります。\n"
-        "ユーザーが指定した範囲より広くDEMを読み込みます。",
-    )
+    return tr(*_WATERSHED_STATUS_TEXTS)
 
 
 # Size notice before an analysis. The thresholds are areas of a 0.5 m DEM

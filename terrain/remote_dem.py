@@ -10,13 +10,19 @@ two German states, Rhineland-Palatinate and Bavaria (1 km GeoTIFF tiles).
 """
 
 import datetime
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import gzip
+import http.client
 import json
 import math
 import os
 import re
 import string
+import threading
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import numpy as np
@@ -77,19 +83,24 @@ class RemoteDemError(Exception):
     """A message for the user."""
 
 
-def _http_download(ctx, url, dest, timeout=180, accept=("tif",)):
+def _http_download(ctx, url, dest, timeout=180, accept=("tif",),
+                   on_headers=None, on_bytes=None):
     """Save url to dest, checking for cancellation every 64 KB."""
     if not url.startswith("https://"):
         raise RemoteDemError(f"Invalid URL: {url}")
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "wb") as f:  # nosec B310
         ctype = r.headers.get("Content-Type", "")
+        if on_headers is not None:
+            on_headers(_content_length(r.headers.get("Content-Length")))
         while True:
             ctx.check()
             chunk = r.read(65536)
             if not chunk:
                 break
             f.write(chunk)
+            if on_bytes is not None:
+                on_bytes(len(chunk))
     if not any(a in ctype.lower() for a in accept):
         try:
             with open(dest, "rb") as f:
@@ -97,6 +108,153 @@ def _http_download(ctx, url, dest, timeout=180, accept=("tif",)):
         except OSError:
             head = ""
         raise RemoteDemError(f"The service returned an error instead of elevation data: {head}")
+
+
+def _content_length(value):
+    try:
+        size = int(value)
+        return size if size >= 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+_RETRYABLE_HTTP_CODES = frozenset((429, 502, 503, 504))
+_HTTP_RETRIES = 3
+
+
+def _wait_for_retry(ctx, seconds):
+    """Let cancellation interrupt the short wait between HTTP attempts."""
+    deadline = time.monotonic() + seconds
+    while True:
+        ctx.check()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(0.2, remaining))
+
+
+def _download_with_retries(ctx, download, url, dest, **kwargs):
+    """Retry temporary service failures; keep other HTTP errors unchanged."""
+    for attempt in range(_HTTP_RETRIES + 1):
+        ctx.check()
+        try:
+            return download(ctx, url, dest, **kwargs)
+        except urllib.error.HTTPError as error:
+            if error.code not in _RETRYABLE_HTTP_CODES or attempt == _HTTP_RETRIES:
+                raise
+            retry_after = _content_length(error.headers.get("Retry-After") if error.headers else None)
+            error.close()
+            delay = min(30, max(2 ** attempt, retry_after or 0))
+            ctx.report(
+                f"DEM service returned HTTP {error.code}; retrying in {delay} s "
+                f"({attempt + 1}/{_HTTP_RETRIES})…"
+            )
+            _wait_for_retry(ctx, delay)
+
+
+class _DownloadConnections:
+    """One reusable HTTPS connection per worker, for the fixed DEM hosts.
+
+    urllib remains the path when an environment proxy is configured. Its
+    proxy and redirect handling is preferable to bypassing those settings.
+    """
+
+    def __init__(self):
+        self._local = threading.local()
+        self._connections = []
+        self._lock = threading.Lock()
+        proxies = urllib.request.getproxies()
+        self._use_urllib = any(proxies.get(key) for key in ("http", "https", "all"))
+
+    def download(self, ctx, url, dest, timeout=180, _retry=True,
+                 on_headers=None, on_bytes=None):
+        if self._use_urllib:
+            return _http_download(ctx, url, dest, timeout=timeout,
+                                  on_headers=on_headers, on_bytes=on_bytes)
+        parts = urllib.parse.urlsplit(url)
+        if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+            raise RemoteDemError(f"Invalid URL: {url}")
+        host = (parts.hostname, parts.port)
+        connection = getattr(self._local, "connection", None)
+        if connection is None or getattr(self._local, "host", None) != host:
+            if connection is not None:
+                connection.close()
+            connection = http.client.HTTPSConnection(parts.hostname, parts.port, timeout=timeout)
+            self._local.connection = connection
+            self._local.host = host
+            with self._lock:
+                self._connections.append(connection)
+        path = urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, ""))
+        try:
+            connection.request("GET", path, headers={"User-Agent": _USER_AGENT})
+            response = connection.getresponse()
+            if 300 <= response.status < 400:
+                response.read()
+                # Keep urllib's redirect behaviour for services that move.
+                return _http_download(ctx, url, dest, timeout=timeout,
+                                      on_headers=on_headers, on_bytes=on_bytes)
+            if response.status >= 400:
+                raise urllib.error.HTTPError(url, response.status, response.reason,
+                                             response.headers, None)
+            ctype = response.getheader("Content-Type", "")
+            if on_headers is not None:
+                on_headers(_content_length(response.getheader("Content-Length")))
+            with open(dest, "wb") as output:
+                while True:
+                    ctx.check()
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+                    if on_bytes is not None:
+                        on_bytes(len(chunk))
+        except (http.client.RemoteDisconnected, http.client.CannotSendRequest,
+                ConnectionResetError, BrokenPipeError):
+            connection.close()
+            self._local.connection = None
+            if _retry:
+                # A server may close an idle keep-alive connection. GET can
+                # safely be sent once more on a fresh connection.
+                return self.download(ctx, url, dest, timeout=timeout, _retry=False,
+                                     on_headers=on_headers, on_bytes=on_bytes)
+            raise
+        except BaseException:
+            connection.close()
+            self._local.connection = None
+            raise
+        if "tif" not in ctype.lower():
+            with open(dest, "rb") as source:
+                head = source.read(300).decode("utf-8", "replace")
+            raise RemoteDemError(
+                f"The service returned an error instead of elevation data: {head}")
+
+    def close(self):
+        with self._lock:
+            connections = self._connections
+            self._connections = []
+        for connection in connections:
+            connection.close()
+
+
+def _download_chunk(ctx, connections, url, dest, store=None, prefix=None,
+                    year=None, code=None, on_headers=None, on_bytes=None):
+    """Download one independent chunk, publishing it atomically if kept."""
+    incoming = store.incoming() if store is not None else None
+    try:
+        part = os.path.join(incoming, os.path.basename(dest)) if incoming else dest
+        if on_headers is None and on_bytes is None:
+            _download_with_retries(ctx, connections.download, url, part)
+        else:
+            _download_with_retries(
+                ctx, connections.download, url, part,
+                on_headers=on_headers, on_bytes=on_bytes,
+            )
+        if store is not None:
+            return store.keep(prefix, year, code, part)
+        return part
+    finally:
+        if incoming is not None:
+            store.drop_incoming(incoming)
 
 
 def snap_bbox(bbox, cell):
@@ -185,7 +343,7 @@ def _probe_ogc(ctx, spec, bbox, parts_dir):
     url = spec["url"].format(layer=spec["layer"], x0=x0, y0=y0, x1=x1, y1=y1, w=w, h=h)
     dest = os.path.join(parts_dir, "probe.tif")
     try:
-        _http_download(ctx, url, dest)
+        _download_with_retries(ctx, _http_download, url, dest)
         dataset = gdal.Open(dest)
         band = dataset.GetRasterBand(1)
         arr = band.ReadAsArray()
@@ -212,6 +370,78 @@ def _probe_ogc(ctx, spec, bbox, parts_dir):
     return empty
 
 
+class _OgcTransferProgress:
+    """Report actual received bytes and a clearly marked size estimate.
+
+    WCS/WMS gives each chunk's Content-Length only when its GET starts. The
+    estimate uses the mean of the chunks whose lengths are known; it becomes
+    exact once every response header has arrived. No extra requests are made.
+    """
+
+    def __init__(self, ctx, label, total, reused):
+        self.ctx = ctx
+        self.label = label
+        self.total = total
+        self.reused = reused
+        self.to_download = total - reused
+        self.downloaded = 0
+        self.active = 0
+        self.received = 0
+        self.sizes = {}
+        self.lock = threading.Lock()
+        self.last_report = 0.0
+        self._report(force=True)
+
+    def started(self):
+        with self.lock:
+            self.active += 1
+            self._report_locked(force=True)
+
+    def headers(self, index, size):
+        with self.lock:
+            if size is not None:
+                self.sizes[index] = size
+            self._report_locked(force=True)
+
+    def bytes(self, count):
+        with self.lock:
+            self.received += count
+            self._report_locked()
+
+    def completed(self, index, path):
+        with self.lock:
+            self.sizes.setdefault(index, os.path.getsize(path))
+            self.downloaded += 1
+            self.active -= 1
+            self._report_locked(force=True)
+
+    def _report(self, force=False):
+        with self.lock:
+            self._report_locked(force)
+
+    def _report_locked(self, force=False):
+        now = time.monotonic()
+        if not force and now - self.last_report < 0.5:
+            return
+        self.last_report = now
+        if self.to_download == 0:
+            total_text = "0.0 MB"
+        elif not self.sizes:
+            total_text = "calculating total"
+        else:
+            known = sum(self.sizes.values())
+            estimated = known * self.to_download / len(self.sizes)
+            estimated = max(estimated, self.received)
+            exact = len(self.sizes) == self.to_download and self.received <= known
+            total_text = ("" if exact else "about ") + f"{estimated / 1e6:.1f} MB"
+        self.ctx.report(
+            f"Fetching {self.label}… {self.reused + self.downloaded}/{self.total}\n"
+            f"DEM transfer: {self.received / 1e6:.1f} MB / {total_text}; "
+            f"{self.downloaded}/{self.to_download} downloaded, "
+            f"{self.reused} reused, {self.active} active."
+        )
+
+
 def _fetch_ogc(ctx, spec, bbox, out_dir, store=None, kept=None):
     """Query WCS / WMS in chunks and combine them into one GeoTIFF.
 
@@ -232,7 +462,7 @@ def _fetch_ogc(ctx, spec, bbox, out_dir, store=None, kept=None):
     empty = None
     if spec.get("probe_px") and kept is None:
         empty = _probe_ogc(ctx, spec, (x0, y0, x1, y1), parts_dir)
-    paths = []
+    entries = []  # (cached path, url, destination, code), in mosaic order
     n = len(columns) * len(rows)
     k = 0
     for row in rows:
@@ -245,7 +475,7 @@ def _fetch_ogc(ctx, spec, bbox, out_dir, store=None, kept=None):
             kept_path = store.find(spec["prefix"], None, code) if store is not None else None
             if kept_path is not None:
                 store.reused += 1
-                paths.append(kept_path)
+                entries.append((kept_path, None, None, code))
                 continue
             if kept is not None:
                 continue
@@ -260,26 +490,55 @@ def _fetch_ogc(ctx, spec, bbox, out_dir, store=None, kept=None):
                 cx1, cy1 = min(cx1, limits[2]), min(cy1, limits[3])
                 if cx0 >= cx1 or cy0 >= cy1:
                     continue
-            ctx.report(f"Fetching {spec['label']}… {k}/{n}")
             url = spec["url"].format(
                 layer=spec["layer"], x0=cx0, y0=cy0, x1=cx1, y1=cy1,
                 w=int(round((cx1 - cx0) / cell)), h=int(round((cy1 - cy0) / cell)))
-            if store is None:
-                dest = os.path.join(parts_dir, f"part_{k:04d}.tif")
-                _http_download(ctx, url, dest)
-            else:
-                # Downloaded on the store's disk, then moved in whole.
-                incoming = store.incoming()
-                try:
-                    part = os.path.join(incoming, code + ".tif")
-                    _http_download(ctx, url, part)
-                    dest = store.keep(spec["prefix"], None, code, part)
-                    store.downloaded += 1
-                finally:
-                    store.drop_incoming(incoming)
-            paths.append(dest)
-    if not paths:
+            dest = os.path.join(parts_dir, f"part_{k:04d}.tif")
+            entries.append((None, url, dest, code))
+    if not entries:
         raise RemoteDemError("No elevation data for this area (outside the source coverage).")
+    paths = [None] * len(entries)
+    tasks = []
+    for index, (cached, url, dest, code) in enumerate(entries):
+        if cached is None:
+            tasks.append((index, url, dest, code))
+        else:
+            paths[index] = cached
+    progress = _OgcTransferProgress(ctx, spec["label"], len(entries), len(entries) - len(tasks))
+    connections = _DownloadConnections()
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            pending = {}
+            remaining = iter(tasks)
+
+            def submit_available():
+                while len(pending) < 2:
+                    try:
+                        index, url, dest, code = next(remaining)
+                    except StopIteration:
+                        break
+                    progress.started()
+                    future = executor.submit(
+                        _download_chunk, ctx, connections, url, dest, store,
+                        spec["prefix"], None, code,
+                        lambda size, index=index: progress.headers(index, size),
+                        progress.bytes,
+                    )
+                    pending[future] = index
+
+            submit_available()
+            while pending:
+                ctx.check()
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    index = pending.pop(future)
+                    paths[index] = future.result()
+                    if store is not None:
+                        store.downloaded += 1
+                    progress.completed(index, paths[index])
+                submit_available()
+    finally:
+        connections.close()
     ctx.report("Combining…")
     # Cut to the area asked for (the chunks reach past it); the gaps NoData.
     return _finish_mosaic(
@@ -441,6 +700,44 @@ def _normalised_tile(path, epsg, cell, vrt_path):
     return vrt_path
 
 
+def _prefetch_de_first(ctx, spec, wanted, urls, parts_dir, store):
+    """Fetch the newest tile of each square, without fetching unneeded years."""
+    keys = sorted(wanted)
+    results = {}
+    connections = _DownloadConnections()
+    pending = deque()
+    next_key = 0
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            while next_key < len(keys) or pending:
+                ctx.check()
+                while next_key < len(keys) and len(pending) < 2:
+                    key = keys[next_key]
+                    next_key += 1
+                    year = wanted[key][0]
+                    code = "{}_{}".format(*key)
+                    if store is not None and store.find(spec["prefix"], year, code):
+                        continue
+                    url = urls(key)[0]
+                    dest = os.path.join(parts_dir, url.rsplit("/", 1)[1])
+                    future = executor.submit(
+                        _download_chunk, ctx, connections, url, dest, store,
+                        spec["prefix"], year, code)
+                    pending.append((key, future))
+                if pending:
+                    key, future = pending.popleft()
+                    try:
+                        results[key] = future.result()
+                    except urllib.error.HTTPError as error:
+                        if error.code != 404:
+                            raise
+                        results[key] = None
+                    ctx.report(f"Fetching {spec['label']}… {len(results)}/{len(keys)}")
+    finally:
+        connections.close()
+    return results
+
+
 def _fetch_de_tiles(ctx, spec, bbox, out_dir, store=None, kept=None):
     """Download the German state's 1 km DGM1 tiles and combine them.
 
@@ -478,50 +775,63 @@ def _fetch_de_tiles(ctx, spec, bbox, out_dir, store=None, kept=None):
         raise RemoteDemError("No elevation data for this area (outside the source coverage).")
     parts_dir = os.path.join(out_dir, f"parts_{spec['prefix']}")
     os.makedirs(parts_dir, exist_ok=True)
+    prefetched = (
+        _prefetch_de_first(ctx, spec, wanted, urls, parts_dir, store)
+        if kept is None else {}
+    )
     layered = []  # (priority, vrt path): the newest survey drawn last, on top
     survey_years = set()
     found = set()  # tiles that exist (fetched or kept), for the coverage mesh
     total = len(wanted)
-    for index, key in enumerate(sorted(wanted), start=1):
-        ctx.check()
-        ctx.report(f"Fetching {spec['label']}… {index}/{total}")
-        # The newest survey first; older ones only fill what it leaves empty.
-        for rank, url in enumerate(urls(key)):
-            name = url.rsplit("/", 1)[1]
-            code = "{}_{}".format(*key)
-            year = wanted[key][rank]
-            dest = store.find(spec["prefix"], year, code) if store is not None else None
-            if dest is not None:
-                store.reused += 1
-            elif kept is not None:
-                continue
-            else:
-                # Downloaded on the store's disk, then moved in whole.
-                incoming = store.incoming() if store is not None else parts_dir
-                try:
-                    dest = os.path.join(incoming, name)
-                    try:
-                        _http_download(ctx, url, dest)
-                    except urllib.error.HTTPError as error:
-                        if error.code == 404:
-                            # No such file (outside the state, or a year the
-                            # list names but the server does not have): try
-                            # the next older survey of this tile, if any.
-                            continue
-                        raise
+    fallback_connections = _DownloadConnections()
+    try:
+        for index, key in enumerate(sorted(wanted), start=1):
+            ctx.check()
+            ctx.report(f"Fetching {spec['label']}… {index}/{total}")
+            # The newest survey first; older ones only fill what it leaves empty.
+            for rank, url in enumerate(urls(key)):
+                name = url.rsplit("/", 1)[1]
+                code = "{}_{}".format(*key)
+                year = wanted[key][rank]
+                if rank == 0 and key in prefetched:
+                    dest = prefetched[key]
+                    if dest is None:  # The newest listed tile was absent (404).
+                        continue
                     if store is not None:
-                        dest = store.keep(spec["prefix"], year, code, dest)
                         store.downloaded += 1
-                finally:
-                    if store is not None:
-                        store.drop_incoming(incoming)
-            found.add(key)
-            vrt = os.path.join(parts_dir, os.path.splitext(name)[0] + "_grid.vrt")
-            layered.append((rank, _normalised_tile(dest, spec["epsg"], cell, vrt)))
-            if wanted[key][rank] is not None:
-                survey_years.add(wanted[key][rank])
-            if _tile_coverage(dest) >= 0.999:
-                break
+                else:
+                    dest = store.find(spec["prefix"], year, code) if store is not None else None
+                    if dest is not None:
+                        store.reused += 1
+                    elif kept is not None:
+                        continue
+                    else:
+                        # Downloaded on the store's disk, then moved in whole.
+                        incoming = store.incoming() if store is not None else parts_dir
+                        try:
+                            dest = os.path.join(incoming, name)
+                            try:
+                                fallback_connections.download(ctx, url, dest)
+                            except urllib.error.HTTPError as error:
+                                if error.code == 404:
+                                    # A missing newest survey may have an older one.
+                                    continue
+                                raise
+                            if store is not None:
+                                dest = store.keep(spec["prefix"], year, code, dest)
+                                store.downloaded += 1
+                        finally:
+                            if store is not None:
+                                store.drop_incoming(incoming)
+                found.add(key)
+                vrt = os.path.join(parts_dir, os.path.splitext(name)[0] + "_grid.vrt")
+                layered.append((rank, _normalised_tile(dest, spec["epsg"], cell, vrt)))
+                if wanted[key][rank] is not None:
+                    survey_years.add(wanted[key][rank])
+                if _tile_coverage(dest) >= 0.999:
+                    break
+    finally:
+        fallback_connections.close()
     if not layered:
         raise RemoteDemError("No elevation data for this area (outside the source coverage).")
     # Later sources of a VRT are drawn over earlier ones: oldest first.

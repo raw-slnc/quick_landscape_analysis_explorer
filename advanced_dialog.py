@@ -5,13 +5,15 @@ tiles fetched for analyses are kept for reuse (core/dem_store.py)."""
 import os
 
 from qgis.core import QgsProject, QgsSettings
+from qgis.PyQt.QtCore import Qt, QUrl
+from qgis.PyQt.QtGui import QDesktopServices
 from qgis.PyQt.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QGroupBox,
-    QHBoxLayout,
+    QGridLayout,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -69,17 +71,26 @@ class AdvancedSettingsDialog(QDialog):
         )
         self.keepCheck.setChecked(settings.value(dem_store.SETTING_ENABLED, False, type=bool))
         box_layout.addWidget(self.keepCheck)
-        row = QHBoxLayout()
+        row = QGridLayout()
         self.folderEdit = QLineEdit(settings.value(dem_store.SETTING_DIR, "", type=str), box)
         self.folderEdit.setPlaceholderText(tr("Folder", "保存場所のフォルダー"))
         choose = QPushButton(tr("Choose…", "選択…"), box)
         choose.clicked.connect(self._choose_folder)
-        row.addWidget(self.folderEdit, 1)
-        row.addWidget(choose)
-        box_layout.addLayout(row)
+        self.openFolderButton = QPushButton(tr("Open Folder", "フォルダを開く"), box)
+        self.openFolderButton.clicked.connect(self._open_folder)
+        button_width = max(choose.sizeHint().width(), self.openFolderButton.sizeHint().width()) + 24
+        choose.setFixedWidth(button_width)
+        self.openFolderButton.setFixedWidth(button_width)
         self.sizeLabel = QLabel(box)
         self.sizeLabel.setWordWrap(True)
-        box_layout.addWidget(self.sizeLabel)
+        self.sizeLabel.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        row.addWidget(self.folderEdit, 0, 0)
+        row.addWidget(choose, 0, 1)
+        row.addWidget(self.sizeLabel, 1, 0, Qt.AlignmentFlag.AlignTop)
+        row.addWidget(self.openFolderButton, 1, 1)
+        row.setColumnStretch(0, 1)
+        box_layout.addLayout(row)
+        box_layout.addStretch(1)
         layout.addWidget(box)
 
         buttons = QDialogButtonBox(
@@ -104,6 +115,11 @@ class AdvancedSettingsDialog(QDialog):
             self.folderEdit.setText(folder)
             self.keepCheck.setChecked(True)
 
+    def _open_folder(self):
+        folder = self.folderEdit.text().strip()
+        if os.path.isdir(folder):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
     def _update_state(self, *args):
         del args
         self.folderEdit.setEnabled(self.keepCheck.isChecked())
@@ -116,6 +132,7 @@ class AdvancedSettingsDialog(QDialog):
                 "QGISの起動中の一時保存（このプロジェクト）：{} GB",
             ).format(_gb(dem_store.folder_size(session))))
         folder = self.folderEdit.text().strip()
+        self.openFolderButton.setEnabled(os.path.isdir(folder))
         if self.keepCheck.isChecked() and folder and os.path.isdir(folder):
             lines.append(tr("In the chosen folder: {} GB", "保存場所：{} GB").format(
                 _gb(dem_store.folder_size(folder))))
