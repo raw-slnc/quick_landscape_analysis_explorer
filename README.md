@@ -136,15 +136,15 @@ terrain in 3D.
   https://sgx.geodatenzentrum.de/web_public/gdz/datenquellen/datenquellen_vg_nuts.pdf
   — the outlines were simplified (changed) for this plugin.
 
-  Regional analyses are not configured for every country. For countries
-  without one, future support is neither scheduled nor ruled out. Where a
-  country has one, a check, "Regional", appears under the analysis checks
-  while the preview is in that country (greyed until a DEM source is chosen;
-  on by default). It runs with the basic analysis, is kept in the same
-  analysis ZIP (`regional/`), and is listed in analysis management in a
-  column of its own (Regional: Analysis, and Data for the layers there for
-  the base map). What each country adds, with its data sources and credits,
-  is described on a page of its own.
+  Regional analyses: where a country has one, a check, "Regional", appears
+  under the analysis checks while the preview is in that country (greyed
+  until a DEM source is chosen; on by default). It runs with the basic
+  analysis, is kept in the same analysis ZIP (`regional/`), and is listed in
+  analysis management in a column of its own (Regional: Analysis, and Data
+  for the layers there for the base map). What each country adds, with its
+  data sources and credits, is described on a page of its own. Not every
+  country has a regional analysis. For countries without one, future support
+  is neither scheduled nor ruled out.
 
   Details: [The Netherlands](docs/regions/netherlands.md)
 
