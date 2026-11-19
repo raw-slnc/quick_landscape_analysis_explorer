@@ -12,6 +12,7 @@ GeoPackage and SLD:
 """
 
 import os
+import re
 import sys
 
 LABEL_FIELD = "landform_subgroup_description"
@@ -61,6 +62,13 @@ def main(gpkg, sld):
                           "terrain", "data", "styles", "nl_geomorphology.qml")
     os.makedirs(os.path.dirname(target), exist_ok=True)
     layer.saveNamedStyle(target)
+    # No font name in the labels: QGIS writes the system's default font
+    # (DejaVu LGC Sans on Linux), which other systems lack and warn about
+    # on loading; without a name each system uses its own default.
+    with open(target, encoding="utf-8") as stream:
+        text = stream.read()
+    with open(target, "w", encoding="utf-8") as stream:
+        stream.write(re.sub(r'fontFamily="[^"]*"', 'fontFamily=""', text))
     print("{}: {} rules, {} bytes".format(
         target, len(layer.renderer().rootRule().children()), os.path.getsize(target)))
     # The layer goes before QGIS shuts down (else Python crashes on exit).
