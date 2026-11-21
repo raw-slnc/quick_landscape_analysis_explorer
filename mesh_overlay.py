@@ -80,7 +80,11 @@ class MeshOverlay:
         self.redraw()
 
     def asGeometry(self):  # noqa: N802 - as QgsRubberBand
-        return QgsGeometry(self._geometry) if self._geometry is not None else QgsGeometry()
+        return (
+            QgsGeometry(self._geometry)
+            if self._geometry is not None
+            else QgsGeometry()
+        )
 
     def redraw(self):
         self._lines.reset(Qgis.GeometryType.Line)
@@ -90,9 +94,18 @@ class MeshOverlay:
         canvas_crs = self._canvas.mapSettings().destinationCrs()
         area = QgsGeometry(self._geometry)
         try:
-            if self._crs is not None and self._crs.isValid() and self._crs != canvas_crs:
-                area.transform(QgsCoordinateTransform(
-                    self._crs, canvas_crs, QgsProject.instance().transformContext()))
+            if (
+                self._crs is not None
+                and self._crs.isValid()
+                and self._crs != canvas_crs
+            ):
+                area.transform(
+                    QgsCoordinateTransform(
+                        self._crs,
+                        canvas_crs,
+                        QgsProject.instance().transformContext(),
+                    )
+                )
         except QgsCsException:
             return
         extent = self._canvas.extent()
@@ -105,7 +118,9 @@ class MeshOverlay:
         if area.isEmpty():
             return
         self._outline.setToGeometry(QgsGeometry(area.constGet().boundary()))
-        self._lines.setToGeometry(self._hatch(view, unit * SPACING_PX).intersection(area))
+        self._lines.setToGeometry(
+            self._hatch(view, unit * SPACING_PX).intersection(area)
+        )
 
     @staticmethod
     def _hatch(box, step):
@@ -116,12 +131,20 @@ class MeshOverlay:
         lines = []
         # 45°: y = x + c; 135°: y = -x + c.
         for sign in (1.0, -1.0):
-            corners = [box.yMinimum() - sign * box.xMinimum(), box.yMaximum() - sign * box.xMinimum(),
-                       box.yMinimum() - sign * box.xMaximum(), box.yMaximum() - sign * box.xMaximum()]
+            corners = [
+                box.yMinimum() - sign * box.xMinimum(),
+                box.yMaximum() - sign * box.xMinimum(),
+                box.yMinimum() - sign * box.xMaximum(),
+                box.yMaximum() - sign * box.xMaximum(),
+            ]
             first = math.floor(min(corners) / offset_step)
             last = math.ceil(max(corners) / offset_step)
             for index in range(first, last + 1):
                 c = index * offset_step
-                lines.append([QgsPointXY(box.xMinimum(), sign * box.xMinimum() + c),
-                              QgsPointXY(box.xMaximum(), sign * box.xMaximum() + c)])
+                lines.append(
+                    [
+                        QgsPointXY(box.xMinimum(), sign * box.xMinimum() + c),
+                        QgsPointXY(box.xMaximum(), sign * box.xMaximum() + c),
+                    ]
+                )
         return QgsGeometry.fromMultiPolylineXY(lines)

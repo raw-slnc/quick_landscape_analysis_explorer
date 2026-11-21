@@ -35,7 +35,9 @@ _vendor = os.path.join(os.path.dirname(os.path.dirname(__file__)), "vendor")
 if _vendor not in sys.path:
     sys.path.append(_vendor)  # vendor は末尾追加でシステム版を優先
 
-from defusedxml.ElementTree import fromstring as _defused_fromstring  # noqa: E402
+from defusedxml.ElementTree import (  # noqa: E402
+    fromstring as _defused_fromstring,
+)
 
 BUCKET_URL = "https://virtual-shizuoka.s3.ap-northeast-1.amazonaws.com"
 # Seconds without an answer before the S3 listing / existence check gives up
@@ -47,8 +49,8 @@ class VsConnectionError(Exception):
     """The S3 bucket could not be reached (no answer, or the line failed)."""
 
 
-TILE_W = 400   # タイル幅 X(northing) [m]
-TILE_H = 300   # タイル高 Y(easting) [m]
+TILE_W = 400  # タイル幅 X(northing) [m]
+TILE_H = 300  # タイル高 Y(easting) [m]
 
 # LP データのリターン種別（実測確認済み、2025年時点）:
 #   2021, 2025: Original（全リターン）と Ground（地面フィルタ済み）が別パスで提供
@@ -60,16 +62,17 @@ TILE_H = 300   # タイル高 Y(easting) [m]
 YEARS_WITH_ORIGINAL = (2021, 2025)  # LP/Original パスが存在する年度
 
 # 年度試行順（新しい順）
-_YEAR_PRIORITY = (2025, 2022, 2021, 2020, 2019)           # Ground/Original 用
-_YEAR_PRIORITY_GRID = (2025, 2022, 2021, 2020, 2019)       # Grid 用
+_YEAR_PRIORITY = (2025, 2022, 2021, 2020, 2019)  # Ground/Original 用
+_YEAR_PRIORITY_GRID = (2025, 2022, 2021, 2020, 2019)  # Grid 用
 
 
 # ── 座標計算 ──────────────────────────────────────────────────────────────────
 
+
 def _folder_origins(folder: str):
     """フォルダコード2文字 → (x_origin, y_origin) EPSG:6676"""
-    x0 = (ord(folder[1]) - ord('E')) * 40000
-    y0 = -(ord(folder[0]) - ord('M') + 2) * 30000
+    x0 = (ord(folder[1]) - ord("E")) * 40000
+    y0 = -(ord(folder[0]) - ord("M") + 2) * 30000
     return x0, y0
 
 
@@ -81,10 +84,17 @@ def tile_bbox(code: str):
     x0, y0 = _folder_origins(folder)
     xc = x0 + (xx % 10) * 4000 + (aa % 10) * TILE_W + TILE_W // 2
     yc = y0 - (xx // 10) * 3000 - (aa // 10) * TILE_H - TILE_H // 2
-    return xc - TILE_W // 2, yc - TILE_H // 2, xc + TILE_W // 2, yc + TILE_H // 2
+    return (
+        xc - TILE_W // 2,
+        yc - TILE_H // 2,
+        xc + TILE_W // 2,
+        yc + TILE_H // 2,
+    )
 
 
-def tiles_for_extent(xmin: float, ymin: float, xmax: float, ymax: float) -> set:
+def tiles_for_extent(
+    xmin: float, ymin: float, xmax: float, ymax: float
+) -> set:
     """EPSG:6676 bbox に重複するタイルコードセットを返す（未確認含む）。
 
     年度によりタイル仕様が異なるため、両方式の候補コードを生成して返す。
@@ -102,7 +112,12 @@ def tiles_for_extent(xmin: float, ymin: float, xmax: float, ymax: float) -> set:
             folder = c1 + c2
             x0, y0 = _folder_origins(folder)
             # フォルダ全体の bbox: X=[x0, x0+40000], Y=[y0-30000, y0]
-            if xmax < x0 or xmin > x0 + 40000 or ymax < y0 - 30000 or ymin > y0:
+            if (
+                xmax < x0
+                or xmin > x0 + 40000
+                or ymax < y0 - 30000
+                or ymin > y0
+            ):
                 continue
             xc_min = max(0, int((xmin - x0) / 4000))
             xc_max = min(9, int((xmax - x0) / 4000))
@@ -142,19 +157,27 @@ def tiles_for_extent(xmin: float, ymin: float, xmax: float, ymax: float) -> set:
     # 方式Bが生成した候補が方式Aタイルとして範囲外に存在した場合に
     # 誤ってダウンロードされる問題を防ぐ。
     return {
-        c for c in codes
-        if (lambda b: b[2] > xmin and b[0] < xmax and b[3] > ymin and b[1] < ymax)(tile_bbox(c))
+        c
+        for c in codes
+        if (
+            lambda b: (
+                b[2] > xmin and b[0] < xmax and b[3] > ymin and b[1] < ymax
+            )
+        )(tile_bbox(c))
     }
 
 
 # ── S3 ヘルパー ───────────────────────────────────────────────────────────────
+
 
 def _s3_list_xx(year: int, folder: str, xx: str, lp_type: str = "Grid") -> set:
     """指定 XX ディレクトリ内のタイルコードセットを S3 LIST で取得。"""
     prefix = f"{year}/LP/{lp_type}/08/{folder}/{xx}/"
     url = f"{BUCKET_URL}/?list-type=2&prefix={prefix}&delimiter=/"
     try:
-        with urllib.request.urlopen(url, timeout=S3_TIMEOUT) as r:  # nosec B310
+        with urllib.request.urlopen(  # nosec B310
+            url, timeout=S3_TIMEOUT
+        ) as r:
             root = _defused_fromstring(r.read())
         ns = {"s": "http://s3.amazonaws.com/doc/2006-03-01/"}
         codes = set()
@@ -165,7 +188,9 @@ def _s3_list_xx(year: int, folder: str, xx: str, lp_type: str = "Grid") -> set:
                 codes.add(fname[:-4])
         return codes
     except urllib.error.HTTPError:
-        return set()  # the server answered: nothing listed (or listing refused)
+        return (
+            set()
+        )  # the server answered: nothing listed (or listing refused)
     except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
         raise VsConnectionError(str(error)) from error
     except Exception:
@@ -192,7 +217,10 @@ def _s3_head_check(year: int, code: str, lp_type: str = "Grid") -> bool:
 
 # ── 年度解決 ──────────────────────────────────────────────────────────────────
 
-def resolve_all_years(codes: set, progress_cb=None, lp_type: str = "Grid") -> dict:
+
+def resolve_all_years(
+    codes: set, progress_cb=None, lp_type: str = "Grid"
+) -> dict:
     """コードセット → {code: [year, ...]}（新しい年度から順に、存在する年度すべて）。
 
     同じタイルコードでも年度によって計測範囲が違い、新しい年度のタイルが
@@ -281,9 +309,11 @@ def resolve_years(codes: set, progress_cb=None, lp_type: str = "Grid") -> dict:
 
 # ── CRS 付与ヘルパー ──────────────────────────────────────────────────────────
 
+
 def _set_tif_epsg(tif_path: str, epsg: int):
     """GeoTIFF に CRS が未設定の場合に EPSG コードを書き込む。"""
     from osgeo import gdal, osr
+
     ds = gdal.Open(tif_path, gdal.GA_Update)
     if ds is None:
         return
@@ -296,6 +326,7 @@ def _set_tif_epsg(tif_path: str, epsg: int):
 
 # ── ダウンロード ──────────────────────────────────────────────────────────────
 
+
 def _download(url: str, dest: str, cancel_cb=None, progress_cb=None):
     """cancel_cb を渡すと、チャンク（65536バイト）単位でキャンセルを確認できる。
     これが無いと大きなZIP取得中はQtのイベントループが回らず、Cancelボタンの
@@ -306,7 +337,10 @@ def _download(url: str, dest: str, cancel_cb=None, progress_cb=None):
     ダウンロード済み/合計バイト数を通知する。totalはContent-Lengthから取得できない
     場合-1（進捗率は出せないが呼び出し側でdownloadedだけ表示することは可能）。"""
     from .remote_zip import Cancelled
-    with urllib.request.urlopen(url, timeout=600) as r, open(dest, "wb") as f:  # nosec B310
+
+    with urllib.request.urlopen(  # nosec B310
+        url, timeout=600
+    ) as r, open(dest, "wb") as f:
         total = r.headers.get("Content-Length")
         total = int(total) if total is not None else -1
         downloaded = 0
@@ -353,13 +387,13 @@ def _xyz_to_tif(txt_path: str, out_dir: str, cell_size: float = 0.5) -> str:
             try:
                 if fmt == "new":
                     parts = line.split(",")
-                    if len(parts) >= 4:          # ID, X, Y, Z [, flag]
+                    if len(parts) >= 4:  # ID, X, Y, Z [, flag]
                         xs.append(float(parts[1]))
                         ys.append(float(parts[2]))
                         zs.append(float(parts[3]))
                 else:
                     parts = line.split()
-                    if len(parts) == 3:          # X Y Z
+                    if len(parts) == 3:  # X Y Z
                         xs.append(float(parts[0]))
                         ys.append(float(parts[1]))
                         zs.append(float(parts[2]))
@@ -379,14 +413,22 @@ def _xyz_to_tif(txt_path: str, out_dir: str, cell_size: float = 0.5) -> str:
 
     grid = np.full((rows, cols), np.float32(-9999.0))
     ci = np.round((x - xmin - cell_size / 2) / cell_size).astype(np.int32)
-    ri = (rows - 1) - np.round((y - ymin - cell_size / 2) / cell_size).astype(np.int32)
+    ri = (rows - 1) - np.round((y - ymin - cell_size / 2) / cell_size).astype(
+        np.int32
+    )
     valid = (ci >= 0) & (ci < cols) & (ri >= 0) & (ri < rows)
     grid[ri[valid], ci[valid]] = z[valid]
 
     out_path = os.path.splitext(txt_path)[0] + ".tif"
     drv = gdal.GetDriverByName("GTiff")
-    ds = drv.Create(out_path, cols, rows, 1, gdal.GDT_Float32,
-                    ["COMPRESS=LZW", "TILED=YES"])
+    ds = drv.Create(
+        out_path,
+        cols,
+        rows,
+        1,
+        gdal.GDT_Float32,
+        ["COMPRESS=LZW", "TILED=YES"],
+    )
     ds.SetGeoTransform([xmin, cell_size, 0, ymax, 0, -cell_size])
     srs = osr.SpatialReference()
     srs.ImportFromEPSG(6676)
@@ -440,7 +482,14 @@ def _extract_tif(zip_path: str, out_dir: str) -> str:
     raise ValueError(f"No TIF or TXT found in {zip_path}")
 
 
-def download_grid_tif(code: str, year: int, out_dir: str, lp_type: str = "Grid", cancel_cb=None, progress_cb=None) -> str:
+def download_grid_tif(
+    code: str,
+    year: int,
+    out_dir: str,
+    lp_type: str = "Grid",
+    cancel_cb=None,
+    progress_cb=None,
+) -> str:
     """LP/{lp_type} ZIP をダウンロード→展開→GeoTIFF パスを返す。
     同タイルコードの TIF が既に out_dir に存在する場合は再利用する。
     progress_cb(downloaded, total) は _download 参照。"""
@@ -465,7 +514,10 @@ def download_grid_tif(code: str, year: int, out_dir: str, lp_type: str = "Grid",
 
 # ── GeoTIFF マージ ────────────────────────────────────────────────────────────
 
-def missing_share(tif_path: str, xmin: float, ymin: float, xmax: float, ymax: float) -> float:
+
+def missing_share(
+    tif_path: str, xmin: float, ymin: float, xmax: float, ymax: float
+) -> float:
     """タイル GeoTIFF が bbox（タイルと重なる部分）を覆えていない割合（0〜1）。
 
     タイルのラスタがタイル枠より小さい場合（はみ出した部分）も欠けとして数える。
@@ -479,7 +531,11 @@ def missing_share(tif_path: str, xmin: float, ymin: float, xmax: float, ymax: fl
     gt = ds.GetGeoTransform()
     width, height = ds.RasterXSize, ds.RasterYSize
     cell_x, cell_y = gt[1], -gt[5]
-    total = max(1, int(round((xmax - xmin) / cell_x)) * int(round((ymax - ymin) / cell_y)))
+    total = max(
+        1,
+        int(round((xmax - xmin) / cell_x))
+        * int(round((ymax - ymin) / cell_y)),
+    )
     col0 = max(0, int(np.floor((xmin - gt[0]) / cell_x)))
     col1 = min(width, int(np.ceil((xmax - gt[0]) / cell_x)))
     row0 = max(0, int(np.floor((gt[3] - ymax) / cell_y)))
@@ -501,8 +557,10 @@ def merge_tifs(tif_paths: list, out_path: str):
 
     後ろの GeoTIFF ほど上に重なる（値なしの画素は下の値を残す）。"""
     from osgeo import gdal
+
     result = gdal.Warp(
-        out_path, tif_paths,
+        out_path,
+        tif_paths,
         format="GTiff",
         creationOptions=["COMPRESS=LZW", "TILED=YES"],
     )

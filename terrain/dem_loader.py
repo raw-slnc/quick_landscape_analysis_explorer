@@ -5,6 +5,7 @@ import numpy as np
 
 try:
     from osgeo import gdal
+
     gdal.UseExceptions()
     HAS_GDAL = True
 except ImportError:
@@ -23,37 +24,59 @@ class DEMLoader:
         self.preparation = {}
 
     def _clean_elevations(self, data, band):
-        """Apply the declared elevation scale/unit, never invent a height datum."""
+        ('Apply the declared elevation scale/unit, never invent a height '
+         'datum.')
         data = data.astype(np.float64)
         nodata = band.GetNoDataValue()
         if nodata is not None:
             data[data == nodata] = np.nan
         unit = (band.GetUnitType() or "").strip().lower()
-        factors = {"": 1.0, "m": 1.0, "metre": 1.0, "meter": 1.0,
-                   "metres": 1.0, "meters": 1.0, "ft": 0.3048,
-                   "foot": 0.3048, "feet": 0.3048,
-                   "us survey foot": 1200.0 / 3937.0}
+        factors = {
+            "": 1.0,
+            "m": 1.0,
+            "metre": 1.0,
+            "meter": 1.0,
+            "metres": 1.0,
+            "meters": 1.0,
+            "ft": 0.3048,
+            "foot": 0.3048,
+            "feet": 0.3048,
+            "us survey foot": 1200.0 / 3937.0,
+        }
         if unit not in factors:
-            raise ValueError(f"Unsupported elevation unit: {unit}. Supply elevations in metres.")
+            raise ValueError(
+                f"Unsupported elevation unit: {unit}. "
+                "Supply elevations in metres."
+            )
         scale = band.GetScale()
         offset = band.GetOffset()
-        data = (data * (1.0 if scale is None else scale)
-                + (0.0 if offset is None else offset)) * factors[unit]
+        data = (
+            data * (1.0 if scale is None else scale)
+            + (0.0 if offset is None else offset)
+        ) * factors[unit]
         data[~np.isfinite(data)] = np.nan
         return data
 
     @staticmethod
     def _horizontal_srs(wkt):
         from osgeo import osr
+
         if not wkt:
-            raise ValueError("DEM/DSM CRS is unknown. Assign the correct source CRS before analysis.")
+            raise ValueError(
+                ('DEM/DSM CRS is unknown. Assign the correct source CRS '
+                 'before analysis.')
+            )
         srs = osr.SpatialReference()
         if srs.ImportFromWkt(wkt) != 0 or srs.Validate() != 0:
-            raise ValueError("DEM/DSM CRS is invalid. Check the source CRS before analysis.")
+            raise ValueError(
+                "DEM/DSM CRS is invalid. Check the source CRS before analysis."
+            )
         srs.StripVertical()
         srs.DemoteTo2D()
         if not (srs.IsProjected() or srs.IsGeographic()):
-            raise ValueError("DEM/DSM requires a projected or geographic horizontal CRS.")
+            raise ValueError(
+                "DEM/DSM requires a projected or geographic horizontal CRS."
+            )
         srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
         return srs
 
@@ -65,70 +88,108 @@ class DEMLoader:
         after read_data/clip_to_extent; only horizontal coordinates are warped.
         """
         from osgeo import osr
+
         if self.data is None:
             self.read_data()
         source_srs = self._horizontal_srs(self.crs_wkt)
         mercator = osr.SpatialReference()
         mercator.ImportFromEPSG(3857)
         target_srs = source_srs.Clone()
-        metric = (source_srs.IsProjected()
-                  and abs(source_srs.GetLinearUnits() - 1.0) < 1e-9
-                  and not source_srs.IsSame(mercator))
+        metric = (
+            source_srs.IsProjected()
+            and abs(source_srs.GetLinearUnits() - 1.0) < 1e-9
+            and not source_srs.IsSame(mercator)
+        )
         rows, cols = self.data.shape
         if not rows or not cols or not np.isfinite(self.data).any():
-            raise ValueError("DEM has no valid elevation values in the analysis range.")
+            raise ValueError(
+                "DEM has no valid elevation values in the analysis range."
+            )
         if not metric:
             wgs84 = osr.SpatialReference()
             wgs84.ImportFromEPSG(4326)
             wgs84.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
             x, y = gdal.ApplyGeoTransform(self.gt, cols / 2, rows / 2)
-            lon, lat, _ = osr.CoordinateTransformation(source_srs, wgs84).TransformPoint(x, y)
-            if not (math.isfinite(lon) and math.isfinite(lat) and -80 <= lat <= 84):
-                raise ValueError("Automatic UTM conversion supports 80 S to 84 N. Supply a local metric projected DEM.")
+            lon, lat, _ = osr.CoordinateTransformation(
+                source_srs, wgs84
+            ).TransformPoint(x, y)
+            if not (
+                math.isfinite(lon) and math.isfinite(lat) and -80 <= lat <= 84
+            ):
+                raise ValueError(
+                    ('Automatic UTM conversion supports 80 S to 84 N. '
+                     'Supply a local metric projected DEM.')
+                )
             zone = min(60, max(1, int((lon + 180) / 6) + 1))
             target_srs = osr.SpatialReference()
             target_srs.ImportFromEPSG((32600 if lat >= 0 else 32700) + zone)
             target_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
         gt = self.gt
-        regular = (gt[1] > 0 and gt[5] < 0 and gt[2] == 0 and gt[4] == 0
-                   and math.isclose(gt[1], -gt[5], rel_tol=1e-9))
+        regular = (
+            gt[1] > 0
+            and gt[5] < 0
+            and gt[2] == 0
+            and gt[4] == 0
+            and math.isclose(gt[1], -gt[5], rel_tol=1e-9)
+        )
         if target_cell_size is not None and (
-                not math.isfinite(target_cell_size) or target_cell_size <= 0):
+            not math.isfinite(target_cell_size) or target_cell_size <= 0
+        ):
             raise ValueError("Analysis cell size must be positive and finite.")
         record = dict(self.preparation) or {
             "source_crs_wkt": self.crs_wkt,
             "source_geotransform": list(gt),
-            "elevation_unit": "metres (assumed when source unit is unspecified)",
+            "elevation_unit": ('metres (assumed when source unit is '
+                               'unspecified)'),
         }
         same_cell = target_cell_size is None or math.isclose(
             gt[1], target_cell_size, rel_tol=1e-9
         )
         if metric and regular and same_cell:
             self.cell_size = gt[1]
-            record.update({"analysis_crs_wkt": self.crs_wkt,
-                           "analysis_geotransform": list(gt),
-                           "cell_size_m": self.cell_size,
-                           "resampling": record.get("resampling", "none")})
+            record.update(
+                {
+                    "analysis_crs_wkt": self.crs_wkt,
+                    "analysis_geotransform": list(gt),
+                    "cell_size_m": self.cell_size,
+                    "resampling": record.get("resampling", "none"),
+                }
+            )
             self.preparation = record
             return self
 
-        source = gdal.GetDriverByName("MEM").Create("", cols, rows, 1, gdal.GDT_Float64)
+        source = gdal.GetDriverByName("MEM").Create(
+            "", cols, rows, 1, gdal.GDT_Float64
+        )
         source.SetGeoTransform(gt)
         source.SetProjection(source_srs.ExportToWkt())
         band = source.GetRasterBand(1)
         band.SetNoDataValue(float("nan"))
         band.WriteArray(np.where(np.isfinite(self.data), self.data, np.nan))
         # A VRT determines the grid without allocating the output pixel array.
-        suggested = gdal.Warp("", source, format="VRT", dstSRS=target_srs.ExportToWkt())
+        suggested = gdal.Warp(
+            "", source, format="VRT", dstSRS=target_srs.ExportToWkt()
+        )
         if suggested is None:
             raise RuntimeError("Could not determine the analysis DEM grid.")
         suggested_gt = suggested.GetGeoTransform()
-        cell = target_cell_size or max(abs(suggested_gt[1]), abs(suggested_gt[5]))
+        cell = target_cell_size or max(
+            abs(suggested_gt[1]), abs(suggested_gt[5])
+        )
         suggested = None
-        method = "average" if metric and regular and cell > gt[1] else "bilinear"
-        options = dict(dstSRS=target_srs.ExportToWkt(), xRes=cell, yRes=cell,
-                       resampleAlg=method, outputType=gdal.GDT_Float64,
-                       srcNodata=float("nan"), dstNodata=float("nan"), errorThreshold=0)
+        method = (
+            "average" if metric and regular and cell > gt[1] else "bilinear"
+        )
+        options = dict(
+            dstSRS=target_srs.ExportToWkt(),
+            xRes=cell,
+            yRes=cell,
+            resampleAlg=method,
+            outputType=gdal.GDT_Float64,
+            srcNodata=float("nan"),
+            dstNodata=float("nan"),
+            errorThreshold=0,
+        )
         # No size limit here: the dialog asks before large analyses.
         warped = gdal.Warp("", source, format="MEM", **options)
         if warped is None:
@@ -143,10 +204,17 @@ class DEMLoader:
         result.data = warped.GetRasterBand(1).ReadAsArray().astype(np.float64)
         result.data[~np.isfinite(result.data)] = np.nan
         if not np.isfinite(result.data).any():
-            raise ValueError("DEM conversion produced no valid elevation values.")
-        record.update({"analysis_crs_wkt": result.crs_wkt,
-                       "analysis_geotransform": list(result.gt),
-                       "cell_size_m": result.cell_size, "resampling": method})
+            raise ValueError(
+                "DEM conversion produced no valid elevation values."
+            )
+        record.update(
+            {
+                "analysis_crs_wkt": result.crs_wkt,
+                "analysis_geotransform": list(result.gt),
+                "cell_size_m": result.cell_size,
+                "resampling": method,
+            }
+        )
         result.preparation = record
         return result
 
@@ -172,10 +240,13 @@ class DEMLoader:
         # 地理座標系（度単位）の場合は中心緯度でメートル換算
         try:
             from osgeo import osr
+
             srs = osr.SpatialReference(wkt=self.crs_wkt)
             if srs.IsGeographic():
                 center_lat = self.gt[3] + self.gt[5] * self._ds.RasterYSize / 2
-                meters_per_deg = 111320.0 * math.cos(math.radians(abs(center_lat)))
+                meters_per_deg = 111320.0 * math.cos(
+                    math.radians(abs(center_lat))
+                )
                 self.cell_size = abs(self.gt[1]) * meters_per_deg
         except Exception:  # nosec B110
             pass
@@ -208,25 +279,44 @@ class DEMLoader:
         return self
 
     def read_aligned_to(self, reference):
-        """Read onto the exact analysis grid; return (array, resampling method)."""
+        ('Read onto the exact analysis grid; return (array, resampling '
+         'method).')
         from osgeo import osr
 
         if self._ds is None:
             raise RuntimeError("DSM is not loaded")
         if not self.crs_wkt or not reference.crs_wkt:
-            raise ValueError("DEM and DSM must both have a coordinate reference system")
-        # Reject explicitly different height datums; horizontal alignment cannot fix them.
+            raise ValueError(
+                "DEM and DSM must both have a coordinate reference system"
+            )
+        # Reject explicitly different height datums; horizontal alignment
+        # cannot fix them.
         source_full = osr.SpatialReference(wkt=self.crs_wkt)
-        dem_wkt = reference.preparation.get("source_crs_wkt", reference.crs_wkt)
+        dem_wkt = reference.preparation.get(
+            "source_crs_wkt", reference.crs_wkt
+        )
         dem_full = osr.SpatialReference(wkt=dem_wkt)
         source_vertical = source_full.GetAttrValue("VERT_CS|VERT_DATUM")
         dem_vertical = dem_full.GetAttrValue("VERT_CS|VERT_DATUM")
-        source_ellipsoidal = source_full.IsGeographic() and source_full.GetAxesCount() == 3
-        dem_ellipsoidal = dem_full.IsGeographic() and dem_full.GetAxesCount() == 3
-        if ((source_vertical and dem_vertical and source_vertical != dem_vertical)
-                or (source_vertical and dem_ellipsoidal)
-                or (dem_vertical and source_ellipsoidal)):
-            raise ValueError("DEM and DSM have different vertical datums. Convert heights to the same datum first.")
+        source_ellipsoidal = (
+            source_full.IsGeographic() and source_full.GetAxesCount() == 3
+        )
+        dem_ellipsoidal = (
+            dem_full.IsGeographic() and dem_full.GetAxesCount() == 3
+        )
+        if (
+            (
+                source_vertical
+                and dem_vertical
+                and source_vertical != dem_vertical
+            )
+            or (source_vertical and dem_ellipsoidal)
+            or (dem_vertical and source_ellipsoidal)
+        ):
+            raise ValueError(
+                ('DEM and DSM have different vertical datums. Convert '
+                 'heights to the same datum first.')
+            )
         source_srs = self._horizontal_srs(self.crs_wkt)
         target_srs = self._horizontal_srs(reference.crs_wkt)
         rows, cols = reference.data.shape
@@ -241,15 +331,24 @@ class DEMLoader:
         # An integer-offset window on the same grid needs no interpolation.
         basis = (1, 2, 4, 5)
         if source_srs.IsSame(target_srs) and np.allclose(
-                [source_gt[i] for i in basis], [target_gt[i] for i in basis],
-                rtol=0, atol=1e-10):
+            [source_gt[i] for i in basis],
+            [target_gt[i] for i in basis],
+            rtol=0,
+            atol=1e-10,
+        ):
             inv_gt = gdal.InvGeoTransform(source_gt)
-            col, row = gdal.ApplyGeoTransform(inv_gt, target_gt[0], target_gt[3])
+            col, row = gdal.ApplyGeoTransform(
+                inv_gt, target_gt[0], target_gt[3]
+            )
             c0, r0 = round(col), round(row)
-            if (abs(col - c0) < 1e-7 and abs(row - r0) < 1e-7
-                    and 0 <= c0 and 0 <= r0
-                    and c0 + cols <= self._ds.RasterXSize
-                    and r0 + rows <= self._ds.RasterYSize):
+            if (
+                abs(col - c0) < 1e-7
+                and abs(row - r0) < 1e-7
+                and 0 <= c0
+                and 0 <= r0
+                and c0 + cols <= self._ds.RasterXSize
+                and r0 + rows <= self._ds.RasterYSize
+            ):
                 data = clean(band.ReadAsArray(c0, r0, cols, rows))
                 if band.GetMaskFlags() != gdal.GMF_ALL_VALID:
                     mask = band.GetMaskBand().ReadAsArray(c0, r0, cols, rows)
@@ -257,9 +356,11 @@ class DEMLoader:
                 data[~np.isfinite(reference.data)] = np.nan
                 return data, "none"
 
-        # Pre-create the destination so even rotated grids retain the DEM affine.
+        # Pre-create the destination so even rotated grids retain the DEM
+        # affine.
         target = gdal.GetDriverByName("MEM").Create(
-            "", cols, rows, 1, gdal.GDT_Float64)
+            "", cols, rows, 1, gdal.GDT_Float64
+        )
         target.SetGeoTransform(target_gt)
         target.SetProjection(reference.crs_wkt)
         target_band = target.GetRasterBand(1)
@@ -267,11 +368,16 @@ class DEMLoader:
         target_band.Fill(float("nan"))
         try:
             result = gdal.Warp(
-                target, self._ds, srcSRS=source_srs.ExportToWkt(),
+                target,
+                self._ds,
+                srcSRS=source_srs.ExportToWkt(),
                 dstSRS=target_srs.ExportToWkt(),
-                resampleAlg="bilinear", errorThreshold=0,
+                resampleAlg="bilinear",
+                errorThreshold=0,
                 srcNodata=nodata if nodata is not None else float("nan"),
-                dstNodata=float("nan"), warpOptions=["INIT_DEST=NO_DATA"])
+                dstNodata=float("nan"),
+                warpOptions=["INIT_DEST=NO_DATA"],
+            )
             if not result:
                 raise RuntimeError("DSM alignment failed")
             data = target_band.ReadAsArray().astype(np.float64)
@@ -300,11 +406,14 @@ class DEMLoader:
                     QgsProject,
                     QgsPointXY,
                 )
+
                 src_crs = QgsCoordinateReferenceSystem()
                 src_crs.createFromWkt(src_crs_wkt)
                 dst_crs = QgsCoordinateReferenceSystem()
                 dst_crs.createFromWkt(self.crs_wkt)
-                xform = QgsCoordinateTransform(src_crs, dst_crs, QgsProject.instance())
+                xform = QgsCoordinateTransform(
+                    src_crs, dst_crs, QgsProject.instance()
+                )
                 pt = xform.transform(QgsPointXY(x, y))
                 x, y = pt.x(), pt.y()
             except Exception:
@@ -313,7 +422,12 @@ class DEMLoader:
         col_f, row_f = gdal.ApplyGeoTransform(gdal.InvGeoTransform(gt), x, y)
         col_i = math.floor(col_f)
         row_i = math.floor(row_f)
-        if col_i < 0 or row_i < 0 or col_i >= self.data.shape[1] or row_i >= self.data.shape[0]:
+        if (
+            col_i < 0
+            or row_i < 0
+            or col_i >= self.data.shape[1]
+            or row_i >= self.data.shape[0]
+        ):
             return None
         val = self.data[row_i, col_i]
         return None if np.isnan(val) else float(val)
@@ -325,6 +439,7 @@ class DEMLoader:
         cols = self._ds.RasterXSize
         try:
             from osgeo import osr
+
             srs = osr.SpatialReference(wkt=self.crs_wkt)
             auth = srs.GetAuthorityCode(None)
             crs_str = f"EPSG:{auth}" if auth else "Unknown CRS"
@@ -340,8 +455,11 @@ class DEMLoader:
 
         inv_gt = gdal.InvGeoTransform(self.gt)
 
-        pixels = [gdal.ApplyGeoTransform(inv_gt, x, y)
-                  for x in (xmin, xmax) for y in (ymin, ymax)]
+        pixels = [
+            gdal.ApplyGeoTransform(inv_gt, x, y)
+            for x in (xmin, xmax)
+            for y in (ymin, ymax)
+        ]
         c0 = math.floor(min(p[0] for p in pixels))
         c1 = math.ceil(max(p[0] for p in pixels))
         r0 = math.floor(min(p[1] for p in pixels))
@@ -355,9 +473,13 @@ class DEMLoader:
             raise ValueError("Clip extent is outside DEM bounds")
 
         band = self._ds.GetRasterBand(1)
-        data = self._clean_elevations(band.ReadAsArray(c0, r0, c1 - c0, r1 - r0), band)
+        data = self._clean_elevations(
+            band.ReadAsArray(c0, r0, c1 - c0, r1 - r0), band
+        )
         if band.GetMaskFlags() != gdal.GMF_ALL_VALID:
-            data[band.GetMaskBand().ReadAsArray(c0, r0, c1 - c0, r1 - r0) == 0] = np.nan
+            data[
+                band.GetMaskBand().ReadAsArray(c0, r0, c1 - c0, r1 - r0) == 0
+            ] = np.nan
 
         x0, y0 = gdal.ApplyGeoTransform(self.gt, c0, r0)
         clipped_gt = (x0, self.gt[1], self.gt[2], y0, self.gt[4], self.gt[5])
@@ -375,6 +497,7 @@ class DEMLoader:
 
 # ── 国土地理院 DEM5A タイルローダー ─────────────────────────────────────────
 
+
 class GSITileDEMLoader:
     """国土地理院 DEM5A PNG タイルをキャンバス範囲で取得し DEMLoader 互換インタフェースを提供する。
 
@@ -390,14 +513,30 @@ class GSITileDEMLoader:
     # 解像度優先順: 1m → 5m → 10m
     # (url_template, zoom, label, encoding)
     TILE_SOURCES = [
-        ("https://cyberjapandata.gsi.go.jp/xyz/dem1a_png/{z}/{x}/{y}.png", 17, "DEM1A 1m",   "gsi"),
-        ("https://cyberjapandata.gsi.go.jp/xyz/dem5a_png/{z}/{x}/{y}.png", 15, "DEM5A 5m",   "gsi"),
-        ("https://cyberjapandata.gsi.go.jp/xyz/dem_png/{z}/{x}/{y}.png",   14, "DEM10B 10m", "gsi"),
+        (
+            "https://cyberjapandata.gsi.go.jp/xyz/dem1a_png/{z}/{x}/{y}.png",
+            17,
+            "DEM1A 1m",
+            "gsi",
+        ),
+        (
+            "https://cyberjapandata.gsi.go.jp/xyz/dem5a_png/{z}/{x}/{y}.png",
+            15,
+            "DEM5A 5m",
+            "gsi",
+        ),
+        (
+            "https://cyberjapandata.gsi.go.jp/xyz/dem_png/{z}/{x}/{y}.png",
+            14,
+            "DEM10B 10m",
+            "gsi",
+        ),
     ]
 
     # AWS Terrain Tiles (Mapzen/Terrarium) — 全球、登録不要
     # (url_template, zoom, label, encoding)
-    _TERRARIUM_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+    _TERRARIUM_URL = ('https://s3.amazonaws.com/elevation-tiles-prod/terra'
+                      'rium/{z}/{x}/{y}.png')
     TERRARIUM_SOURCES = [
         (_TERRARIUM_URL, 14, "Terrarium zoom 14", "terrarium"),
         (_TERRARIUM_URL, 13, "Terrarium zoom 13", "terrarium"),
@@ -411,7 +550,7 @@ class GSITileDEMLoader:
         self.crs_wkt = None
         self.cell_size = None
         self.nodata = None
-        self._ds = None   # DEMLoader 互換ダミー
+        self._ds = None  # DEMLoader 互換ダミー
         # 取得したタイルを残して使い回す場所（core/dem_store.TileStore）。None なら残さない。
         self.tile_store = None
 
@@ -419,17 +558,23 @@ class GSITileDEMLoader:
 
     @staticmethod
     def _lonlat_to_tile(lon, lat, z):
-        n = 2 ** z
+        n = 2**z
         tx = int((lon + 180.0) / 360.0 * n)
         lat_r = math.radians(lat)
-        ty = int((1.0 - math.log(math.tan(lat_r) + 1.0 / math.cos(lat_r)) / math.pi) / 2.0 * n)
+        ty = int(
+            (1.0 - math.log(math.tan(lat_r) + 1.0 / math.cos(lat_r)) / math.pi)
+            / 2.0
+            * n
+        )
         return tx, ty
 
     @staticmethod
     def _tile_to_lonlat(tx, ty, z):
-        n = 2 ** z
+        n = 2**z
         lon = tx / n * 360.0 - 180.0
-        lat = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * ty / n))))
+        lat = math.degrees(
+            math.atan(math.sinh(math.pi * (1.0 - 2.0 * ty / n)))
+        )
         return lon, lat
 
     # ── タイル取得 ────────────────────────────────────────────────────
@@ -454,7 +599,9 @@ class GSITileDEMLoader:
         try:
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; QGIS plugin)"},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; QGIS plugin)"
+                },
             )
             with urllib.request.urlopen(req, timeout=15) as resp:  # nosec B310
                 return resp.read(), None
@@ -465,7 +612,9 @@ class GSITileDEMLoader:
     def _store_name(tile_url):
         """保存場所（core/dem_store.py）でのタイルの種類名。"""
         if "/xyz/" in tile_url:  # 国土地理院: .../xyz/dem5a_png/{z}/...
-            return "gsi_" + tile_url.split("/xyz/", 1)[1].split("/", 1)[0].replace("_png", "")
+            return "gsi_" + tile_url.split("/xyz/", 1)[1].split("/", 1)[
+                0
+            ].replace("_png", "")
         return "terrarium"
 
     @staticmethod
@@ -480,10 +629,16 @@ class GSITileDEMLoader:
             img = img.convertToFormat(QImage.Format.Format_ARGB32)
 
             ptr = img.bits()
-            nbytes = img.sizeInBytes() if hasattr(img, 'sizeInBytes') else img.byteCount()
-            if hasattr(ptr, 'setsize'):
+            nbytes = (
+                img.sizeInBytes()
+                if hasattr(img, "sizeInBytes")
+                else img.byteCount()
+            )
+            if hasattr(ptr, "setsize"):
                 ptr.setsize(nbytes)
-            buf = np.frombuffer(bytes(ptr), dtype=np.uint8).reshape((256, 256, 4))
+            buf = np.frombuffer(bytes(ptr), dtype=np.uint8).reshape(
+                (256, 256, 4)
+            )
             # ARGB32 リトルエンディアン: byte0=B, byte1=G, byte2=R, byte3=A
             r = buf[:, :, 2].astype(np.float64)
             g = buf[:, :, 1].astype(np.float64)
@@ -494,12 +649,21 @@ class GSITileDEMLoader:
                 arr = r * 256.0 + g + b / 256.0 - 32768.0
             else:
                 # 国土地理院形式: RGB 24bit → 0.01m 精度
-                u = (r.astype(np.uint32) * 65536
-                     + g.astype(np.uint32) * 256
-                     + b.astype(np.uint32))
-                arr = np.where(u == 0x800000, np.nan,
-                               np.where(u < 0x800000, u.astype(np.float64) * 0.01,
-                                        (u.astype(np.int32) - 0x1000000).astype(np.float64) * 0.01))
+                u = (
+                    r.astype(np.uint32) * 65536
+                    + g.astype(np.uint32) * 256
+                    + b.astype(np.uint32)
+                )
+                arr = np.where(
+                    u == 0x800000,
+                    np.nan,
+                    np.where(
+                        u < 0x800000,
+                        u.astype(np.float64) * 0.01,
+                        (u.astype(np.int32) - 0x1000000).astype(np.float64)
+                        * 0.01,
+                    ),
+                )
 
             return arr.astype(np.float64), None
         except Exception as e:
@@ -507,8 +671,16 @@ class GSITileDEMLoader:
 
     # ── 範囲取得 ──────────────────────────────────────────────────────
 
-    def fetch_for_extent(self, lon_min, lat_min, lon_max, lat_max, sources=None, cancel_cb=None,
-                         progress_cb=None):
+    def fetch_for_extent(
+        self,
+        lon_min,
+        lat_min,
+        lon_max,
+        lat_max,
+        sources=None,
+        cancel_cb=None,
+        progress_cb=None,
+    ):
         """WGS84 経緯度範囲のタイルをダウンロードして numpy 配列に組み立てる。
         sources を省略すると TILE_SOURCES（1m→5m→10m）の順で自動フォールバックする。
 
@@ -526,23 +698,33 @@ class GSITileDEMLoader:
         self._used_source_label = None
         self._cancelled = False
         result = None
-        for item in (sources or self.TILE_SOURCES):
+        for item in sources or self.TILE_SOURCES:
             # 3-tuple (後方互換) または 4-tuple (encoding付き)
             if len(item) == 4:
                 tile_url, tile_zoom, label, encoding = item
             else:
                 tile_url, tile_zoom, label = item
                 encoding = "gsi"
-            result = self._fetch_tiles(lon_min, lat_min, lon_max, lat_max,
-                                       tile_url, tile_zoom, encoding, cancel_cb=cancel_cb,
-                                       progress_cb=progress_cb)
+            result = self._fetch_tiles(
+                lon_min,
+                lat_min,
+                lon_max,
+                lat_max,
+                tile_url,
+                tile_zoom,
+                encoding,
+                cancel_cb=cancel_cb,
+                progress_cb=progress_cb,
+            )
             if result is None:  # キャンセルされた
                 self._cancelled = True
                 return self
             if not np.all(np.isnan(result[0])):
                 self._used_source_label = label
                 break
-            self.last_errors.append(f"{label} fetch failed → trying next resolution")
+            self.last_errors.append(
+                f"{label} fetch failed → trying next resolution"
+            )
         if result is None or np.all(np.isnan(result[0])):
             return self
         total_arr, zoom_used, x0, y0 = result
@@ -550,7 +732,7 @@ class GSITileDEMLoader:
 
         # ── EPSG:3857 (Web Mercator) でジオトランスフォームを設定 ──────────
         WORLD_M = 20037508.3428
-        tile_m = 2.0 * WORLD_M / (2 ** zoom_used)
+        tile_m = 2.0 * WORLD_M / (2**zoom_used)
         px_m = tile_m / TS
 
         x_origin = -WORLD_M + x0 * tile_m
@@ -559,17 +741,20 @@ class GSITileDEMLoader:
         # EPSG:3857 CRS
         try:
             from osgeo import osr
+
             srs = osr.SpatialReference()
             srs.ImportFromEPSG(3857)
             crs_wkt = srs.ExportToWkt()
         except Exception:
-            crs_wkt = 'PROJCS["WGS 84 / Pseudo-Mercator",GEOGCS["WGS 84",' \
-                      'DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],' \
-                      'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],' \
-                      'PROJECTION["Mercator_1SP"],PARAMETER["central_meridian",0],' \
-                      'PARAMETER["scale_factor",1],PARAMETER["false_easting",0],' \
-                      'PARAMETER["false_northing",0],UNIT["metre",1],' \
-                      'AUTHORITY["EPSG","3857"]]'
+            crs_wkt = (
+                'PROJCS["WGS 84 / Pseudo-Mercator",GEOGCS["WGS 84",'
+                'DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],'
+                'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],'
+                'PROJECTION["Mercator_1SP"],PARAMETER["central_meridian",0],'
+                'PARAMETER["scale_factor",1],PARAMETER["false_easting",0],'
+                'PARAMETER["false_northing",0],UNIT["metre",1],'
+                'AUTHORITY["EPSG","3857"]]'
+            )
 
         # Web Mercator の px_m は赤道基準。高緯度ほど実地上距離は短くなるため cos(lat) で補正
         center_lat = (lat_min + lat_max) / 2
@@ -582,11 +767,21 @@ class GSITileDEMLoader:
         self.nodata = None
         return self
 
-    def _fetch_tiles(self, lon_min, lat_min, lon_max, lat_max, tile_url, zoom, encoding="gsi", cancel_cb=None,
-                     progress_cb=None):
+    def _fetch_tiles(
+        self,
+        lon_min,
+        lat_min,
+        lon_max,
+        lat_max,
+        tile_url,
+        zoom,
+        encoding="gsi",
+        cancel_cb=None,
+        progress_cb=None,
+    ):
         """指定URLとzoomでタイルを取得し (total_arr, zoom, x0, y0) を返す。
         キャンセル時は None を返す。progress_cb(done, total) はタイル1枚ごとに呼ぶ。"""
-        max_tile = 2 ** zoom - 1
+        max_tile = 2**zoom - 1
         TS = self.TILE_SIZE
 
         x0, y0 = self._lonlat_to_tile(lon_min, lat_max, zoom)
@@ -610,12 +805,15 @@ class GSITileDEMLoader:
                 if cancel_cb is not None and cancel_cb():
                     return None  # キャンセル
                 url = tile_url.format(z=zoom, x=tx, y=ty)
-                tile, err = self._stored_or_fetched(tile_url, url, zoom, tx, ty, encoding)
+                tile, err = self._stored_or_fetched(
+                    tile_url, url, zoom, tx, ty, encoding
+                )
                 if tile is not None:
-                    total_arr[iy * TS:(iy + 1) * TS,
-                              ix * TS:(ix + 1) * TS] = tile
+                    total_arr[
+                        iy * TS: (iy + 1) * TS, ix * TS: (ix + 1) * TS
+                    ] = tile
                 elif err:
-                    if not hasattr(self, 'last_errors'):
+                    if not hasattr(self, "last_errors"):
                         self.last_errors = []
                     self.last_errors.append(f"z={zoom} x={tx} y={ty}: {err}")
                 if progress_cb is not None:
@@ -668,14 +866,20 @@ class GSITileDEMLoader:
         # CRS 変換（src_crs_wkt が指定されており EPSG:3857 でない場合）
         if src_crs_wkt:
             try:
-                from qgis.core import (QgsCoordinateReferenceSystem,
-                                       QgsCoordinateTransform,
-                                       QgsPointXY, QgsProject)
+                from qgis.core import (
+                    QgsCoordinateReferenceSystem,
+                    QgsCoordinateTransform,
+                    QgsPointXY,
+                    QgsProject,
+                )
+
                 src_crs = QgsCoordinateReferenceSystem()
                 src_crs.createFromWkt(src_crs_wkt)
                 dst_crs = QgsCoordinateReferenceSystem("EPSG:3857")
                 if src_crs.authid() != "EPSG:3857":
-                    xform = QgsCoordinateTransform(src_crs, dst_crs, QgsProject.instance())
+                    xform = QgsCoordinateTransform(
+                        src_crs, dst_crs, QgsProject.instance()
+                    )
                     pt = xform.transform(QgsPointXY(x, y))
                     x, y = pt.x(), pt.y()
             except Exception:  # nosec B110
@@ -683,7 +887,12 @@ class GSITileDEMLoader:
         gt = self.gt
         col_i = int((x - gt[0]) / gt[1])
         row_i = int((y - gt[3]) / gt[5])
-        if col_i < 0 or row_i < 0 or col_i >= self.data.shape[1] or row_i >= self.data.shape[0]:
+        if (
+            col_i < 0
+            or row_i < 0
+            or col_i >= self.data.shape[1]
+            or row_i >= self.data.shape[0]
+        ):
             return None
         val = self.data[row_i, col_i]
         return None if np.isnan(val) else float(val)
@@ -698,6 +907,7 @@ class GSITileDEMLoader:
 
 
 # ── GeoTIFF 変換ユーティリティ ──────────────────────────────────────────────
+
 
 def save_as_geotiff(loader, output_path):
     """GSITileDEMLoader または DEMLoader の data/gt/crs_wkt を GeoTIFF に保存する。
@@ -723,8 +933,12 @@ def save_as_geotiff(loader, output_path):
 
     driver = gdal.GetDriverByName("GTiff")
     ds = driver.Create(
-        output_path, cols, rows, 1, gdal.GDT_Float32,
-        ["COMPRESS=LZW", "TILED=YES", "BIGTIFF=IF_NEEDED"]
+        output_path,
+        cols,
+        rows,
+        1,
+        gdal.GDT_Float32,
+        ["COMPRESS=LZW", "TILED=YES", "BIGTIFF=IF_NEEDED"],
     )
     ds.SetGeoTransform(loader.gt)
 

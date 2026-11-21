@@ -30,8 +30,12 @@ from .terrain import coverage, sources, world_country
 # (terrain/data/regions/, made by tools/build_regions.py), countries from
 # QGIS's world map, with only the parts in the source's own area (mainland
 # France, the main islands of New Zealand).
-_REGIONS_DIR = os.path.join(os.path.dirname(__file__), "terrain", "data", "regions")
-REGION_KEYS = tuple(key for key, source in sources.SOURCES.items() if source.get("outline"))
+_REGIONS_DIR = os.path.join(
+    os.path.dirname(__file__), "terrain", "data", "regions"
+)
+REGION_KEYS = tuple(
+    key for key, source in sources.SOURCES.items() if source.get("outline")
+)
 
 # Update threads still running when their window went away.
 _RUNNING = set()
@@ -55,8 +59,11 @@ class _Job(QThread):
             if self.kind == "check" and self.key in coverage.ASK_FIRST:
                 # France: the count of new tiles; Bavaria: whether its list
                 # is newer (its size). Fetched only when the user says so.
-                news = (coverage.ign_new_tiles() if self.key == "ign_mnt"
-                        else coverage.by_list_newer())
+                news = (
+                    coverage.ign_new_tiles()
+                    if self.key == "ign_mnt"
+                    else coverage.by_list_newer()
+                )
                 if news is None:
                     return
                 coverage.mark_checked(self.key)
@@ -67,7 +74,8 @@ class _Job(QThread):
             if coverage.update(self.key):
                 self.changed.emit(self.key, news if news is not None else -1)
             coverage.mark_checked(self.key)
-        except Exception:  # noqa: BLE001 - no network, a changed service: the grid stays
+        # no network, a changed service: the grid stays
+        except Exception:  # noqa: BLE001
             if self.kind == "update":
                 self.failed.emit(self.key)
 
@@ -94,9 +102,18 @@ class CoverageView:
             if region is not None:
                 return region
             if key not in self._grids:
-                self._grids[key] = world_country.country_wkt(coverage.WHOLE_COUNTRY[key])
+                self._grids[key] = world_country.country_wkt(
+                    coverage.WHOLE_COUNTRY[key]
+                )
             wkt = self._grids[key]
-            return (QgsGeometry.fromWkt(wkt), QgsCoordinateReferenceSystem("EPSG:4326")) if wkt else None
+            return (
+                (
+                    QgsGeometry.fromWkt(wkt),
+                    QgsCoordinateReferenceSystem("EPSG:4326"),
+                )
+                if wkt
+                else None
+            )
         if key not in self._grids:
             self._grids[key] = coverage.load(key)
         grid = self._grids[key]
@@ -110,8 +127,12 @@ class CoverageView:
         except QgsCsException:
             return None
         # One tile of margin, so the mesh reaches past the preview's edges.
-        wkt = grid.shape_wkt(box.xMinimum() - grid.cell_w, box.yMinimum() - grid.cell_h,
-                             box.xMaximum() + grid.cell_w, box.yMaximum() + grid.cell_h)
+        wkt = grid.shape_wkt(
+            box.xMinimum() - grid.cell_w,
+            box.yMinimum() - grid.cell_h,
+            box.xMaximum() + grid.cell_w,
+            box.yMaximum() + grid.cell_h,
+        )
         return (QgsGeometry.fromWkt(wkt), source_crs) if wkt else None
 
     def region(self, key):
@@ -138,20 +159,32 @@ class CoverageView:
             self._start(key, "update")
 
     def _busy(self, key):
-        return any(thread.key == key and thread.isRunning() for thread in self._threads)
+        return any(
+            thread.key == key and thread.isRunning()
+            for thread in self._threads
+        )
 
     def _start(self, key, kind):
         thread = _Job(key, kind, self._owner)
         thread.changed.connect(self._changed)
         thread.found_new.connect(self._on_new_tiles)
         thread.failed.connect(self._on_failed)
-        thread.finished.connect(lambda t=thread: self._threads.remove(t) if t in self._threads else None)
+        thread.finished.connect(
+            lambda t=thread: (
+                self._threads.remove(t) if t in self._threads else None
+            )
+        )
         self._threads.append(thread)
         thread.start()
 
     def forget(self):
-        """Read the grids again (an analysis may have brought them up to date)."""
-        self._grids = {key: value for key, value in self._grids.items() if key.startswith("region:")}
+        ('Read the grids again (an analysis may have brought them up to '
+         'date).')
+        self._grids = {
+            key: value
+            for key, value in self._grids.items()
+            if key.startswith("region:")
+        }
 
     def _changed(self, key, taken):
         self._grids.pop(key, None)
@@ -178,23 +211,31 @@ def _region(key):
         return None
     if outline[0] == "file":
         try:
-            with open(os.path.join(_REGIONS_DIR, key + ".json"), encoding="utf-8") as handle:
+            with open(
+                os.path.join(_REGIONS_DIR, key + ".json"), encoding="utf-8"
+            ) as handle:
                 data = json.load(handle)
         except (OSError, ValueError):
             return None
         return QgsGeometry.fromWkt(data["wkt"]), QgsCoordinateReferenceSystem(
-            "EPSG:{}".format(data["epsg"]))
+            "EPSG:{}".format(data["epsg"])
+        )
     _kind, code, (xmin, ymin, xmax, ymax) = outline
     wkt = world_country.country_wkt(code)
     if not wkt:
         return None
     area = QgsGeometry.fromWkt(wkt)
     # Only the parts within the source's own area (not overseas parts).
-    parts = [part for part in area.asGeometryCollection()
-             if part.boundingBox().intersects(QgsRectangle(xmin, ymin, xmax, ymax))]
+    parts = [
+        part
+        for part in area.asGeometryCollection()
+        if part.boundingBox().intersects(QgsRectangle(xmin, ymin, xmax, ymax))
+    ]
     if not parts:
         return None
-    return QgsGeometry.collectGeometry(parts), QgsCoordinateReferenceSystem("EPSG:4326")
+    return QgsGeometry.collectGeometry(parts), QgsCoordinateReferenceSystem(
+        "EPSG:4326"
+    )
 
 
 def country_by_outline(lon, lat):
@@ -213,8 +254,13 @@ def country_by_outline(lon, lat):
         area, crs = region
         try:
             local = QgsGeometry(point)
-            local.transform(QgsCoordinateTransform(
-                QgsCoordinateReferenceSystem("EPSG:4326"), crs, QgsProject.instance().transformContext()))
+            local.transform(
+                QgsCoordinateTransform(
+                    QgsCoordinateReferenceSystem("EPSG:4326"),
+                    crs,
+                    QgsProject.instance().transformContext(),
+                )
+            )
         except QgsCsException:
             continue
         if area.contains(local):

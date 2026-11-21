@@ -52,7 +52,11 @@ BASIC_STRETCH, REGIONAL_STRETCH = 4, 5
 def _role(layer):
     """What a layer is shown as: its basic output, or the basic output a
     regional layer is shown instead of (its "excludes")."""
-    return layer.customProperty(OUTPUT_KEY_PROPERTY) or layer.customProperty(EXCLUDES_PROPERTY) or ""
+    return (
+        layer.customProperty(OUTPUT_KEY_PROPERTY)
+        or layer.customProperty(EXCLUDES_PROPERTY)
+        or ""
+    )
 
 
 def exclusive(layer, other):
@@ -90,7 +94,9 @@ class AnalysisManagementPanel(QWidget):
             tr("Exit full screen", "全画面を終了"), self
         )
         self.restoreWindowButton.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarNormalButton)
+            self.style().standardIcon(
+                QStyle.StandardPixmap.SP_TitleBarNormalButton
+            )
         )
         self.restoreWindowButton.setVisible(False)
         header.addWidget(title)
@@ -107,18 +113,22 @@ class AnalysisManagementPanel(QWidget):
         name_font = self.analysisNameLabel.font()
         name_font.setBold(True)
         self.analysisNameLabel.setFont(name_font)
-        # The name and, at the top right of the box, the button that renames it.
+        # The name and, at the top right of the box, the button that renames
+        # it.
         name_row = QHBoxLayout()
         name_row.setContentsMargins(0, 0, 0, 0)
         name_row.addWidget(self.analysisNameLabel, 1)
         self.renameButton = QPushButton(
             # Leading/trailing spaces give the label breathing room, like the
             # Open folder button.
-            tr("   Rename analysis   ", "   解析名を変更   "), analysis_box
+            tr("   Rename analysis   ", "   解析名を変更   "),
+            analysis_box,
         )
         self.renameButton.clicked.connect(self.renameRequested)
         name_row.addWidget(
-            self.renameButton, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop
+            self.renameButton,
+            0,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop,
         )
         analysis_layout.addLayout(name_row)
         self.detailsLabel = QLabel(analysis_box)
@@ -129,7 +139,9 @@ class AnalysisManagementPanel(QWidget):
         analysis_layout.addWidget(self.detailsLabel)
         layout.addWidget(analysis_box)
 
-        layers_box = QGroupBox(tr("Shown in preview", "プレビューに表示"), self)
+        layers_box = QGroupBox(
+            tr("Shown in preview", "プレビューに表示"), self
+        )
         layers_layout = QVBoxLayout(layers_box)
         # Two columns: the basic analysis, and a regional analysis when the
         # analysis has one (the basic column takes the whole width otherwise).
@@ -157,8 +169,10 @@ class AnalysisManagementPanel(QWidget):
         self._show_regional(False)
         layers_layout.addLayout(columns, 1)
         note = QLabel(
-            tr("Checked layers are shown in the preview.",
-               "チェックしたレイヤーをプレビューに表示します。"),
+            tr(
+                "Checked layers are shown in the preview.",
+                "チェックしたレイヤーをプレビューに表示します。",
+            ),
             layers_box,
         )
         layers_layout.addWidget(note)
@@ -167,7 +181,9 @@ class AnalysisManagementPanel(QWidget):
         # Two extra project layers drawn on top of everything (e.g. forest
         # compartments or roads for the export). Drawing order, top first:
         # optional 1, optional 2, overlay, analysis, base map.
-        optional_box = QGroupBox(tr("Optional layers", "オプショナルレイヤー"), self)
+        optional_box = QGroupBox(
+            tr("Optional layers", "オプショナルレイヤー"), self
+        )
         # Both on one row, built like the preview-layer row below (the dialog
         # gives all their labels one width), each combo with the layer-panel
         # on/off button of its layer.
@@ -180,7 +196,9 @@ class AnalysisManagementPanel(QWidget):
             (self.optionalLayerCombo1, self.optionalLayerCombo2), start=1
         ):
             combo.setAllowEmptyLayer(True)
-            combo.layerChanged.connect(lambda *_args: self.layersChanged.emit())
+            combo.layerChanged.connect(
+                lambda *_args: self.layersChanged.emit()
+            )
             label, button = add_layer_choice(
                 optional_row,
                 tr("Optional {}", "オプショナル{}").format(index),
@@ -191,7 +209,8 @@ class AnalysisManagementPanel(QWidget):
             self._optionalVisibilityButtons.append(button)
 
         # Below the analysis layers, so that the optional layers sit right
-        # above the shared preview-layer row (all non-analysis layers together).
+        # above the shared preview-layer row (all non-analysis layers
+        # together).
         footer = QHBoxLayout()
         footer.addStretch(1)
         self.exitButton = QPushButton(
@@ -200,8 +219,11 @@ class AnalysisManagementPanel(QWidget):
         # Blue, like the Run button: it switches back to the inputs.
         self.exitButton.setObjectName("qlaeExitButton")
         self.exitButton.setStyleSheet(
-            "QPushButton#qlaeExitButton {background-color: #2b6cb0; color: white;"
-            "font-weight: bold; " + PLUGIN_SIZE_RULE + " border: 1px solid #1e4c7d; border-radius: 3px;"
+            'QPushButton#qlaeExitButton {background-color: #2b6cb0; '
+            'color: white;'
+            "font-weight: bold; "
+            + PLUGIN_SIZE_RULE
+            + " border: 1px solid #1e4c7d; border-radius: 3px;"
             "padding: 4px 12px;}"
             "QPushButton#qlaeExitButton:hover {background-color: #245a93;}"
             "QPushButton#qlaeExitButton:pressed {background-color: #1e4c7d;}"
@@ -241,7 +263,9 @@ class AnalysisManagementPanel(QWidget):
             self.regionalTree.clear()
             if analysis_group is not None:
                 self._add_children(
-                    self.layerTree.invisibleRootItem(), analysis_group, checked_ids
+                    self.layerTree.invisibleRootItem(),
+                    analysis_group,
+                    checked_ids,
                 )
             self.layerTree.expandAll()
             self.regionalTree.expandAll()
@@ -258,7 +282,11 @@ class AnalysisManagementPanel(QWidget):
     def _show_regional(self, shown):
         """The regional column and the column names, or the basic list alone
         across the whole width."""
-        for widget in (self.regionalTree, self.regionalHeading, self.basicHeading):
+        for widget in (
+            self.regionalTree,
+            self.regionalHeading,
+            self.basicHeading,
+        ):
             widget.setVisible(shown)
         # A hidden column keeps its share of the width unless its stretch
         # goes too: the basic list then takes it all.
@@ -307,10 +335,15 @@ class AnalysisManagementPanel(QWidget):
 
     def _add_children(self, parent_item, group, checked_ids):
         for node in group.children():
-            if isinstance(node, QgsLayerTreeGroup) and node.customProperty(REGIONAL_GROUP_PROPERTY):
+            if isinstance(node, QgsLayerTreeGroup) and node.customProperty(
+                REGIONAL_GROUP_PROPERTY
+            ):
                 # The regional group ("Regional analysis"): in the right-hand
                 # column, named there Analysis (the column is named Regional).
-                item = QTreeWidgetItem(self.regionalTree.invisibleRootItem(), [tr("Analysis", "解析")])
+                item = QTreeWidgetItem(
+                    self.regionalTree.invisibleRootItem(),
+                    [tr("Analysis", "解析")],
+                )
                 self._add_children(item, node, checked_ids)
                 if item.childCount() == 0:
                     self.regionalTree.invisibleRootItem().removeChild(item)
@@ -319,23 +352,42 @@ class AnalysisManagementPanel(QWidget):
                 self._add_children(item, node, checked_ids)
                 if item.childCount() == 0:
                     parent_item.removeChild(item)
-            elif isinstance(node, QgsLayerTreeLayer) and node.layer() is not None:
+            elif (
+                isinstance(node, QgsLayerTreeLayer)
+                and node.layer() is not None
+            ):
                 layer = node.layer()
-                if layer.customProperty(REGIONAL_DATA_PROPERTY) or layer.customProperty(BASE_MAP_ONLY_PROPERTY):
+                if layer.customProperty(
+                    REGIONAL_DATA_PROPERTY
+                ) or layer.customProperty(BASE_MAP_ONLY_PROPERTY):
                     # Regional data (the DSM, the orthophotos): in the layer
                     # panel in the basic Data group, but it belongs to the
                     # regional analysis: listed in the right-hand column
                     # under Data. The orthophotos without a tick box (they
                     # are there for the base map).
-                    item = QTreeWidgetItem(self._regional_data_item(), [layer.name()])
+                    item = QTreeWidgetItem(
+                        self._regional_data_item(), [layer.name()]
+                    )
                     item.setData(0, _LAYER_ID_ROLE, layer.id())
                     if layer.customProperty(BASE_MAP_ONLY_PROPERTY):
-                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+                        item.setFlags(
+                            item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable
+                        )
                         continue
-                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                    checked = (node.isVisible() if checked_ids is None
-                               else layer.id() in checked_ids)
-                    item.setCheckState(0, Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+                    item.setFlags(
+                        item.flags() | Qt.ItemFlag.ItemIsUserCheckable
+                    )
+                    checked = (
+                        node.isVisible()
+                        if checked_ids is None
+                        else layer.id() in checked_ids
+                    )
+                    item.setCheckState(
+                        0,
+                        Qt.CheckState.Checked
+                        if checked
+                        else Qt.CheckState.Unchecked,
+                    )
                     continue
                 item = QTreeWidgetItem(parent_item, [layer.name()])
                 item.setData(0, _LAYER_ID_ROLE, layer.id())
@@ -345,7 +397,10 @@ class AnalysisManagementPanel(QWidget):
                 else:
                     checked = layer.id() in checked_ids
                 item.setCheckState(
-                    0, Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+                    0,
+                    Qt.CheckState.Checked
+                    if checked
+                    else Qt.CheckState.Unchecked,
                 )
 
     def _regional_data_item(self):
@@ -354,7 +409,9 @@ class AnalysisManagementPanel(QWidget):
         root = self.regionalTree.invisibleRootItem()
         title = tr("Data", "データ")
         for index in range(root.childCount()):
-            if root.child(index).text(0) == title and not root.child(index).data(0, _LAYER_ID_ROLE):
+            if root.child(index).text(0) == title and not root.child(
+                index
+            ).data(0, _LAYER_ID_ROLE):
                 return root.child(index)
         return QTreeWidgetItem(root, [title])
 
@@ -380,16 +437,22 @@ class AnalysisManagementPanel(QWidget):
                 if layer is not None:
                     items.append((item, layer))
         for item, layer in items:
-            partners = [other_item.text(0).replace(" ⇄", "")
-                        for other_item, other in items if exclusive(layer, other)]
+            partners = [
+                other_item.text(0).replace(" ⇄", "")
+                for other_item, other in items
+                if exclusive(layer, other)
+            ]
             if not partners:
                 continue
             if not item.text(0).endswith(" ⇄"):
                 item.setText(0, item.text(0) + " ⇄")
-            item.setToolTip(0, tr(
-                "Exclusive with “{}”: only one can be ticked.",
-                "「{}」と排他です。どちらか一方だけをチェックできます。",
-            ).format(tr("”, “", "」「").join(partners)))
+            item.setToolTip(
+                0,
+                tr(
+                    "Exclusive with “{}”: only one can be ticked.",
+                    "「{}」と排他です。どちらか一方だけをチェックできます。",
+                ).format(tr("”, “", "」「").join(partners)),
+            )
 
     def _untick_exclusive_starts(self):
         """Of ticked layers exclusive with each other, untick those whose role
@@ -401,18 +464,25 @@ class AnalysisManagementPanel(QWidget):
         for tree in (self.layerTree, self.regionalTree):
             for item in self._layer_items(tree.invisibleRootItem()):
                 layer = project.mapLayer(item.data(0, _LAYER_ID_ROLE))
-                if layer is not None and item.checkState(0) == Qt.CheckState.Checked:
+                if (
+                    layer is not None
+                    and item.checkState(0) == Qt.CheckState.Checked
+                ):
                     ticked.append((item, layer))
         for item, layer in ticked:
             if item.checkState(0) != Qt.CheckState.Checked:
                 continue
-            if any(exclusive(layer, other) and other_item.checkState(0) == Qt.CheckState.Checked
-                   for other_item, other in ticked):
+            if any(
+                exclusive(layer, other)
+                and other_item.checkState(0) == Qt.CheckState.Checked
+                for other_item, other in ticked
+            ):
                 if _role(layer) in UNTICKED_FIRST:
                     item.setCheckState(0, Qt.CheckState.Unchecked)
 
     def _untick_excluded(self, layer_id):
-        """Ticking a layer unticks those it is exclusive with (see exclusive)."""
+        ('Ticking a layer unticks those it is exclusive with (see '
+         'exclusive).')
         from qgis.core import QgsProject
 
         project = QgsProject.instance()

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Memory meter shown at the right of the Status heading while an analysis runs.
+"""Memory meter shown at the right of the Status heading
+while an analysis runs.
 
 The bar is the PC's whole memory; filled is what is used now (other
 programs lighter, then QGIS darker), read every second. The line is where
@@ -43,7 +44,8 @@ class MemoryMeter(QWidget):
     # Analysis start and end.
 
     def start(self, need):
-        """Show the meter; ``need`` bytes are expected on top of the use now."""
+        ('Show the meter; ``need`` bytes are expected on top of the use '
+         'now.')
         self._refresh(update=False)
         self.set_need(need)
         if self._total is None:
@@ -94,16 +96,28 @@ class MemoryMeter(QWidget):
         if self._total is None:
             return "", ""
         text = tr("Memory {} / {} GB", "メモリ {} / {} GB").format(
-            _gb(self._used), _gb(self._total))
+            _gb(self._used), _gb(self._total)
+        )
         shortage = self._shortage()
-        short_text = tr("about {} GB short", "約{} GB不足").format(_gb(shortage)) if shortage else ""
+        short_text = (
+            tr("about {} GB short", "約{} GB不足").format(_gb(shortage))
+            if shortage
+            else ""
+        )
         return text, short_text
 
     def _fit(self):
         metrics = self.fontMetrics()
-        sample = (tr("Memory {} / {} GB", "メモリ {} / {} GB").format("88.8", "888.8") + "  "
-                  + tr("about {} GB short", "約{} GB不足").format("888.8"))
-        self.setFixedSize(metrics.horizontalAdvance(sample) + 8 + BAR_WIDTH, metrics.height())
+        sample = (
+            tr("Memory {} / {} GB", "メモリ {} / {} GB").format(
+                "88.8", "888.8"
+            )
+            + "  "
+            + tr("about {} GB short", "約{} GB不足").format("888.8")
+        )
+        self.setFixedSize(
+            metrics.horizontalAdvance(sample) + 8 + BAR_WIDTH, metrics.height()
+        )
 
     def _colors(self):
         """The bar's colours: (frame, other programs, QGIS, red). Other
@@ -128,37 +142,86 @@ class MemoryMeter(QWidget):
         def opaque(color):
             # A colour drawn over the window colour, as it looks there.
             alpha = color.alphaF()
-            return QColor(*(
-                int(round(part * alpha + back * (1.0 - alpha)))
-                for part, back in zip(color.getRgb()[:3], window.getRgb()[:3])
-            ))
+            return QColor(
+                *(
+                    int(round(part * alpha + back * (1.0 - alpha)))
+                    for part, back in zip(
+                        color.getRgb()[:3], window.getRgb()[:3]
+                    )
+                )
+            )
 
         def row(mark, color, text):
             # No wrapping: a rich-text tooltip is otherwise wrapped at a
             # width Qt picks, which breaks the longer lines.
-            return ('<tr><td style="color:{}; white-space:nowrap;">{}</td>'
-                    '<td style="white-space:nowrap;">{}</td></tr>').format(
-                opaque(color).name(), mark, text)
+            return (
+                '<tr><td style="color:{}; white-space:nowrap;">{}</td>'
+                '<td style="white-space:nowrap;">{}</td></tr>'
+            ).format(opaque(color).name(), mark, text)
 
-        rows = [row("□", frame, tr("Whole memory: {} GB", "メモリ全体：{} GB").format(
-            _gb(self._total)))]
+        rows = [
+            row(
+                "□",
+                frame,
+                tr("Whole memory: {} GB", "メモリ全体：{} GB").format(
+                    _gb(self._total)
+                ),
+            )
+        ]
         if self._own is not None:
-            rows.append(row("■", others, tr("Other programs: {} GB", "ほかのプログラム：{} GB").format(
-                _gb(max(0.0, self._used - self._own)))))
-            rows.append(row("■", qgis, tr("QGIS: {} GB", "QGIS：{} GB").format(_gb(self._own))))
+            rows.append(
+                row(
+                    "■",
+                    others,
+                    tr(
+                        "Other programs: {} GB", "ほかのプログラム：{} GB"
+                    ).format(_gb(max(0.0, self._used - self._own))),
+                )
+            )
+            rows.append(
+                row(
+                    "■",
+                    qgis,
+                    tr("QGIS: {} GB", "QGIS：{} GB").format(_gb(self._own)),
+                )
+            )
         else:
-            rows.append(row("■", others, tr("Used now: {} GB", "使用中：{} GB").format(
-                _gb(self._used))))
+            rows.append(
+                row(
+                    "■",
+                    others,
+                    tr("Used now: {} GB", "使用中：{} GB").format(
+                        _gb(self._used)
+                    ),
+                )
+            )
         if self._line is not None:
-            rows.append(row("┃", frame, tr(
-                "Expected at the analysis's peak: {} GB",
-                "解析で一番多く使うときの見込み：{} GB",
-            ).format(_gb(self._line))))
+            rows.append(
+                row(
+                    "┃",
+                    frame,
+                    tr(
+                        "Expected at the analysis's peak: {} GB",
+                        "解析で一番多く使うときの見込み：{} GB",
+                    ).format(_gb(self._line)),
+                )
+            )
         shortage = self._shortage()
         if shortage:
-            rows.append(row("■", red, tr("Short: about {} GB", "不足：約{} GB").format(
-                _gb(shortage))))
-        self.setToolTip('<table cellspacing="0" cellpadding="1">{}</table>'.format("".join(rows)))
+            rows.append(
+                row(
+                    "■",
+                    red,
+                    tr("Short: about {} GB", "不足：約{} GB").format(
+                        _gb(shortage)
+                    ),
+                )
+            )
+        self.setToolTip(
+            '<table cellspacing="0" cellpadding="1">{}</table>'.format(
+                "".join(rows)
+            )
+        )
 
     def paintEvent(self, event):  # noqa: N802 - Qt name
         if self._total is None:
@@ -168,25 +231,35 @@ class MemoryMeter(QWidget):
         red = QColor(220, 30, 30)
         # Over the group box's frame line: paint the window colour first.
         painter.fillRect(self.rect(), palette.color(QPalette.ColorRole.Window))
-        area = QRectF(self.width() - BAR_WIDTH, 2, BAR_WIDTH - 1, self.height() - 5)
+        area = QRectF(
+            self.width() - BAR_WIDTH, 2, BAR_WIDTH - 1, self.height() - 5
+        )
         text, short_text = self._texts()
         ink = palette.color(QPalette.ColorRole.WindowText)
         text_right = area.left() - 6
         if short_text:
             width = self.fontMetrics().horizontalAdvance(short_text)
             painter.setPen(red)
-            painter.drawText(QRectF(text_right - width, 0, width, self.height()),
-                             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, short_text)
+            painter.drawText(
+                QRectF(text_right - width, 0, width, self.height()),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                short_text,
+            )
             text_right -= width + self.fontMetrics().horizontalAdvance("  ")
         painter.setPen(ink)
-        painter.drawText(QRectF(0, 0, text_right, self.height()),
-                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, text)
+        painter.drawText(
+            QRectF(0, 0, text_right, self.height()),
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            text,
+        )
 
         # The scale: the whole memory, or the line when it goes past it (the
         # whole memory's frame then shrinks and the red runs on after it).
         span = max(float(self._total), self._line or 0.0)
         scale = area.width() / span
-        bar = QRectF(area.left(), area.top(), self._total * scale, area.height())
+        bar = QRectF(
+            area.left(), area.top(), self._total * scale, area.height()
+        )
         # The whole memory: a faint ground and a frame in the text colour (the
         # theme's Base and Mid can be the same as the heading's background).
         ground = QColor(ink)
@@ -194,17 +267,30 @@ class MemoryMeter(QWidget):
         frame, others, highlight, red = self._colors()
         painter.fillRect(bar, ground)
         used_w = min(bar.width(), self._used * scale)
-        painter.fillRect(QRectF(bar.left(), bar.top(), used_w, bar.height()), others)
+        painter.fillRect(
+            QRectF(bar.left(), bar.top(), used_w, bar.height()), others
+        )
         if self._own is not None:
             # QGIS last, next to the line: it is what grows in an analysis.
             own_w = min(used_w, self._own * scale)
             painter.fillRect(
-                QRectF(bar.left() + used_w - own_w, bar.top(), own_w, bar.height()), highlight)
+                QRectF(
+                    bar.left() + used_w - own_w, bar.top(), own_w, bar.height()
+                ),
+                highlight,
+            )
         shortage = self._shortage()
         if shortage:
             # Red: from what may be used to the line, past the frame if so.
-            painter.fillRect(QRectF(area.left() + (self._line - shortage) * scale, area.top(),
-                                    shortage * scale, area.height()), red)
+            painter.fillRect(
+                QRectF(
+                    area.left() + (self._line - shortage) * scale,
+                    area.top(),
+                    shortage * scale,
+                    area.height(),
+                ),
+                red,
+            )
         painter.setPen(QPen(frame, 1))
         painter.drawRect(bar)
         if self._line is not None:

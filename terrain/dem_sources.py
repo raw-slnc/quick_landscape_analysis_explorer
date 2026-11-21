@@ -11,7 +11,11 @@ from . import sources
 
 # (group label, region, [(key, label)]), from the country files.
 GROUPS = [
-    (group["label"], group["region"], [(source["key"], source["label"]) for source in group["sources"]])
+    (
+        group["label"],
+        group["region"],
+        [(source["key"], source["label"]) for source in group["sources"]],
+    )
     for group in sources.groups()
 ]
 
@@ -25,7 +29,8 @@ COUNTRY_NAMES = dict(sources.COUNTRY_NAMES)
 # network source (by key kind); None = the whole country.
 SOURCE_REGIONS = {
     key.partition(":")[0]: (source["country"], source.get("place"))
-    for key, source in sources.SOURCES.items() if source.get("country")
+    for key, source in sources.SOURCES.items()
+    if source.get("country")
 }
 
 
@@ -57,8 +62,10 @@ def overlaps(region, bbox84):
     if region is None or bbox84 is None:
         return True
     return not (
-        bbox84[2] < region[0] or bbox84[0] > region[2]
-        or bbox84[3] < region[1] or bbox84[1] > region[3]
+        bbox84[2] < region[0]
+        or bbox84[0] > region[2]
+        or bbox84[3] < region[1]
+        or bbox84[1] > region[3]
     )
 
 

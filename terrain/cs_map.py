@@ -4,6 +4,7 @@
 This module implements an original CS-style terrain visualization,
 using the plugin's DEM-derived slope and curvature arrays.
 """
+
 import numpy as np
 
 from .analysis import compute_curvature, compute_slope_deg
@@ -11,7 +12,8 @@ from .analysis import compute_curvature, compute_slope_deg
 
 CUSTOM_CS_COLOR_PRESET = {
     "name": "custom_cs",
-    "description": "Custom CS color balance, tuned against same-area DEM/reference comparison.",
+    "description": ('Custom CS color balance, tuned against same-area '
+                    'DEM/reference comparison.'),
     "smooth_sigma_px": 2.4,
     "slope_percentiles": (3.0, 97.0),
     "elevation_percentiles": (2.0, 98.0),
@@ -43,7 +45,8 @@ CUSTOM_CS_COLOR_PRESET = {
 SHIZUOKA_REFERENCE_TUNED_PRESET = {
     **CUSTOM_CS_COLOR_PRESET,
     "name": "shizuoka_reference_tuned",
-    "description": "Reference-tuned CS color balance with restored valley blue and softer neutral tones.",
+    "description": ('Reference-tuned CS color balance with restored '
+                    'valley blue and softer neutral tones.'),
     "smooth_sigma_px": 1.0,
     "ridge_gamma": 0.28,
     "valley_gamma": 0.28,
@@ -175,7 +178,9 @@ def compute_cs_map(dem, cell_size):
     abs_curv = np.abs(curv)
     curv_valid = np.isfinite(abs_curv)
     if np.any(curv_valid):
-        cmax = np.nanpercentile(abs_curv[curv_valid], preset["curvature_percentile"])
+        cmax = np.nanpercentile(
+            abs_curv[curv_valid], preset["curvature_percentile"]
+        )
     else:
         cmax = 0.0
     if not np.isfinite(cmax) or cmax <= 0:
@@ -190,13 +195,16 @@ def compute_cs_map(dem, cell_size):
         preset.get("valley_spread_sigma_px", preset["color_mask_sigma_px"]),
     )
     valley_color_mask = valley_mask * (
-        1.0 - preset.get("valley_ridge_fade", 0.0) * np.clip(ridge_mask, 0.0, 1.0)
+        1.0
+        - preset.get("valley_ridge_fade", 0.0) * np.clip(ridge_mask, 0.0, 1.0)
     )
     depth_surface = _smooth_nan(smooth_dem, preset["valley_depth_sigma_px"])
     local_depth = np.clip(depth_surface - smooth_dem, 0.0, None)
     depth_u = _robust_unit(local_depth, *preset["valley_depth_percentiles"])
     depth_u = np.power(depth_u, preset["valley_depth_gamma"])
-    depth_spread = np.clip(_smooth_nan(depth_u, preset["valley_depth_spread_sigma_px"]), 0.0, 1.0)
+    depth_spread = np.clip(
+        _smooth_nan(depth_u, preset["valley_depth_spread_sigma_px"]), 0.0, 1.0
+    )
     depth_area = np.clip(0.30 * depth_u + 0.70 * depth_spread, 0.0, 1.0)
     depth_low = _smooth_range(depth_area, *preset["valley_depth_low_range"])
     depth_mid = _smooth_range(depth_area, *preset["valley_depth_mid_range"])
@@ -208,30 +216,43 @@ def compute_cs_map(dem, cell_size):
         + preset["valley_depth_peak_boost"] * depth_high
     )
     slope_gate = np.clip(
-        (slope_u - preset["valley_slope_cutoff"]) / (1.0 - preset["valley_slope_cutoff"]),
+        (slope_u - preset["valley_slope_cutoff"])
+        / (1.0 - preset["valley_slope_cutoff"]),
         0.0,
         1.0,
     )
     slope_gate = np.power(slope_gate, preset["valley_slope_gate_gamma"])
-    plain_depth_gate = _smooth_range(depth_area, *preset["valley_plain_depth_range"])
-    slope_gate = np.maximum(slope_gate, preset["valley_plain_depth_support"] * plain_depth_gate)
+    plain_depth_gate = _smooth_range(
+        depth_area, *preset["valley_plain_depth_range"]
+    )
+    slope_gate = np.maximum(
+        slope_gate, preset["valley_plain_depth_support"] * plain_depth_gate
+    )
     valley_color_mask = np.maximum(
         valley_color_mask,
         preset["valley_depth_support"] * depth_area,
     )
     valley_color_mask = valley_color_mask * depth_gate
-    valley_color_mask = _smooth_nan(valley_color_mask, preset["valley_color_smooth_sigma_px"])
-    valley_color_mask *= 1.0 - preset["valley_convex_block"] * np.clip(ridge, 0.0, 1.0)
+    valley_color_mask = _smooth_nan(
+        valley_color_mask, preset["valley_color_smooth_sigma_px"]
+    )
+    valley_color_mask *= 1.0 - preset["valley_convex_block"] * np.clip(
+        ridge, 0.0, 1.0
+    )
     valley_color_mask = valley_color_mask * slope_gate
     ridge_t = np.power(np.clip(ridge_mask, 0.0, 1.0), preset["ridge_gamma"])
-    valley_t = np.power(np.clip(valley_color_mask, 0.0, 1.0), preset["valley_gamma"])
+    valley_t = np.power(
+        np.clip(valley_color_mask, 0.0, 1.0), preset["valley_gamma"]
+    )
 
     gray_base, gray_scale = preset["elevation_gray"]
     gray = (gray_base + gray_scale * elev_u).astype(np.float32)
     rgb = np.stack([gray, gray, gray], axis=-1)
 
     # Slope base: white-to-brown color and white-to-black shading.
-    slope_brown = _lerp_color(preset["slope_brown_light"], preset["slope_brown_dark"], slope_u)
+    slope_brown = _lerp_color(
+        preset["slope_brown_light"], preset["slope_brown_dark"], slope_u
+    )
     rgb = _overlay(rgb, slope_brown, preset["slope_brown_alpha"])
     rgb = _overlay(
         rgb,
@@ -245,27 +266,40 @@ def compute_cs_map(dem, cell_size):
     ridge_red = _lerp_color(curv_neutral, preset["ridge_red"], ridge_t)
     ridge_alpha = _soft_alpha(ridge_mask, *preset["ridge_alpha"])
     ridge_slope_gate = np.clip(
-        (slope_u - preset["ridge_slope_cutoff"]) / (1.0 - preset["ridge_slope_cutoff"]),
+        (slope_u - preset["ridge_slope_cutoff"])
+        / (1.0 - preset["ridge_slope_cutoff"]),
         0.0,
         1.0,
     )
-    ridge_alpha *= np.power(ridge_slope_gate, preset["ridge_slope_gate_gamma"])[..., None]
-    ridge_alpha *= 1.0 - preset["ridge_valley_fade"] * np.clip(valley_mask, 0.0, 1.0)[..., None]
+    ridge_alpha *= np.power(
+        ridge_slope_gate, preset["ridge_slope_gate_gamma"]
+    )[..., None]
+    ridge_alpha *= (
+        1.0
+        - preset["ridge_valley_fade"]
+        * np.clip(valley_mask, 0.0, 1.0)[..., None]
+    )
     rgb = _overlay(rgb, ridge_red, ridge_alpha)
 
     # Valley blue is a moisture-like overlay: the area spreads softly from
     # depressions, while the core strength still follows the unsmoothed hollow.
     curv_blue = _lerp_color(curv_neutral, preset["valley_blue"], valley_t)
-    rgb = _overlay(rgb, curv_blue, _soft_alpha(valley_color_mask, *preset["valley_alpha"]))
+    rgb = _overlay(
+        rgb, curv_blue, _soft_alpha(valley_color_mask, *preset["valley_alpha"])
+    )
     valley_core_start = preset["valley_core_start"]
-    valley_core = np.clip((valley - valley_core_start) / (1.0 - valley_core_start), 0.0, 1.0)
+    valley_core = np.clip(
+        (valley - valley_core_start) / (1.0 - valley_core_start), 0.0, 1.0
+    )
     valley_core *= 0.50 + 0.50 * depth_area
     core_blue = _lerp_color(
         preset["valley_core_light"],
         preset["valley_core_dark"],
         np.sqrt(valley_core),
     )
-    rgb = _overlay(rgb, core_blue, preset["valley_core_alpha"] * valley_core[..., None])
+    rgb = _overlay(
+        rgb, core_blue, preset["valley_core_alpha"] * valley_core[..., None]
+    )
 
     slope_black = _lerp_color((255, 255, 255), preset["slope_black"], slope_u)
     rgb = _overlay(rgb, slope_black, preset["slope_black_alpha"])
@@ -274,9 +308,7 @@ def compute_cs_map(dem, cell_size):
     contrast_center, contrast_factor, contrast_offset = preset["contrast"]
     rgb = (rgb - contrast_center) * contrast_factor + contrast_offset
     luminance = (
-        0.299 * rgb[..., 0:1]
-        + 0.587 * rgb[..., 1:2]
-        + 0.114 * rgb[..., 2:3]
+        0.299 * rgb[..., 0:1] + 0.587 * rgb[..., 1:2] + 0.114 * rgb[..., 2:3]
     )
     rgb = luminance + (rgb - luminance) * preset["final_saturation"]
     plain_u = 1.0 - np.clip(

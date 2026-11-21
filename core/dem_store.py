@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""DEM tiles kept for reuse: the tiles of a source as fetched, by year and code.
+"""DEM tiles kept for reuse: the tiles of a source as fetched,
+by year and code.
 
 Two places:
 - the session store: in the project's quick_landscape_analysis/dem_session/,
@@ -108,7 +109,9 @@ def open_store(project_directory, chosen=""):
         os.makedirs(chosen, exist_ok=True)
         _remove_stale_incoming(chosen)
         return TileStore(chosen, "folder")
-    root = os.path.join(project_directory, packages.ROOT_FOLDER, SESSION_FOLDER)
+    root = os.path.join(
+        project_directory, packages.ROOT_FOLDER, SESSION_FOLDER
+    )
     os.makedirs(root, exist_ok=True)
     session = _session()
     remove_old_sessions(root, session["id"])
@@ -160,13 +163,17 @@ def folder_size(root):
 
 # This run of QGIS and its lock.
 
+
 def _session():
     from qgis.PyQt.QtCore import QCoreApplication
 
     app = QCoreApplication.instance()
     session = getattr(app, _APP_ATTRIBUTE, None) if app is not None else None
     if session is None:
-        session = {"id": "{}_{}".format(os.getpid(), uuid.uuid4().hex[:8]), "locks": {}}
+        session = {
+            "id": "{}_{}".format(os.getpid(), uuid.uuid4().hex[:8]),
+            "locks": {},
+        }
         if app is not None:
             setattr(app, _APP_ATTRIBUTE, session)
     return session

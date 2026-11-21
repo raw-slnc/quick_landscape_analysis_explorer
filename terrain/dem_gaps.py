@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """Gaps in the DEM for the GeoPDF, filled for 3D viewing.
 
-Apps that combine the GeoPDF with a DEM (such as Avid Maps' field map) draw the DEM in 3D and
+Apps that combine the GeoPDF with a DEM (such as Avid Maps' field map)
+draw the DEM in 3D and
 need a height in every cell: a cell without one is drawn at a made-up
 height, as a spike in a valley or a wall at the edge. GSI DEMs leave the
 sea, lakes and rivers, and gaps in the survey, without heights alike, and
@@ -35,18 +36,30 @@ import math
 import numpy as np
 from osgeo import gdal, ogr, osr
 
-WATER_TILE_URL = "https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/{z}/{x}/{y}.pbf"
+WATER_TILE_URL = (
+    "https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/{z}/{x}/{y}.pbf"
+)
 WATER_TILE_MAX_ZOOM = 16
 WATER_TILE_MIN_ZOOM = 12
 # vt_code of the water areas (WA) that are the sea; lakes and rivers differ.
 SEA_VT_CODE = 5100
 # (url, zoom, encoding) of the coarser GSI DEMs used for the land.
 COARSE_SOURCES = (
-    ("https://cyberjapandata.gsi.go.jp/xyz/dem5a_png/{z}/{x}/{y}.png", 15, "gsi"),
-    ("https://cyberjapandata.gsi.go.jp/xyz/dem_png/{z}/{x}/{y}.png", 14, "gsi"),
+    (
+        "https://cyberjapandata.gsi.go.jp/xyz/dem5a_png/{z}/{x}/{y}.png",
+        15,
+        "gsi",
+    ),
+    (
+        "https://cyberjapandata.gsi.go.jp/xyz/dem_png/{z}/{x}/{y}.png",
+        14,
+        "gsi",
+    ),
 )
 # Terrarium (outside Japan): the finest zoom used, lowered for wide areas.
-TERRARIUM_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+TERRARIUM_URL = (
+    "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+)
 TERRARIUM_MAX_ZOOM = 14
 TERRARIUM_MIN_ZOOM = 10
 # Holes not touching water up to this many cells are interpolated.
@@ -126,8 +139,12 @@ class _Grid:
         c0, c1 = (float(value) for value in (cols or (0, self.shape[1])))
         xs, ys = [], []
         for i in range(11):
-            for col, row in ((c0 + (c1 - c0) * i / 10.0, r0), (c0 + (c1 - c0) * i / 10.0, r1),
-                             (c0, r0 + (r1 - r0) * i / 10.0), (c1, r0 + (r1 - r0) * i / 10.0)):
+            for col, row in (
+                (c0 + (c1 - c0) * i / 10.0, r0),
+                (c0 + (c1 - c0) * i / 10.0, r1),
+                (c0, r0 + (r1 - r0) * i / 10.0),
+                (c1, r0 + (r1 - r0) * i / 10.0),
+            ):
                 x, y = gdal.ApplyGeoTransform(self.gt, col, row)
                 mx, my, _ = self.to_mercator.TransformPoint(x, y)
                 xs.append(mx)
@@ -144,7 +161,7 @@ class _Grid:
 
 def _tile_range(bounds, zoom):
     """Tiles (x0, y0, x1, y1) at ``zoom`` covering Web Mercator bounds."""
-    tile_m = 2.0 * WEB_MERCATOR_LIMIT / (2 ** zoom)
+    tile_m = 2.0 * WEB_MERCATOR_LIMIT / (2**zoom)
     xmin, ymin, xmax, ymax = bounds
     x0 = int(math.floor((xmin + WEB_MERCATOR_LIMIT) / tile_m))
     x1 = int(math.floor((xmax + WEB_MERCATOR_LIMIT) / tile_m))
@@ -168,7 +185,10 @@ def _water_codes(grid, check):
         return None, False
     bounds = grid.mercator_bounds()
     zoom = WATER_TILE_MAX_ZOOM
-    while zoom > WATER_TILE_MIN_ZOOM and _tile_count(_tile_range(bounds, zoom)) > MAX_TILES:
+    while (
+        zoom > WATER_TILE_MIN_ZOOM
+        and _tile_count(_tile_range(bounds, zoom)) > MAX_TILES
+    ):
         zoom -= 1
     tiles = _tile_range(bounds, zoom)
     if _tile_count(tiles) > MAX_TILES:
@@ -187,20 +207,32 @@ def _water_codes(grid, check):
             url = WATER_TILE_URL.format(z=zoom, x=tx, y=ty)
             try:
                 request = urllib.request.Request(url, headers=_HEADERS)
-                with urllib.request.urlopen(request, timeout=15) as response:  # nosec B310
+                with urllib.request.urlopen(  # nosec B310
+                    request, timeout=15
+                ) as response:
                     content = response.read()
             except urllib.error.HTTPError as error:
-                if error.code != 404:  # 404: nothing drawn (no water, far out at sea)
+                if (
+                    error.code != 404
+                ):  # 404: nothing drawn (no water, far out at sea)
                     complete = False
                 continue
-            except Exception:  # noqa: BLE001 - not read: the water there is not known
+            # not read: the water there is not known
+            except Exception:  # noqa: BLE001
                 complete = False
                 continue
             name = "/vsimem/qlae_wa_{}_{}_{}.pbf".format(zoom, tx, ty)
             gdal.FileFromMemBuffer(name, content)
             try:
-                tile = gdal.OpenEx(name, gdal.OF_VECTOR, open_options=[
-                    "X={}".format(tx), "Y={}".format(ty), "Z={}".format(zoom)])
+                tile = gdal.OpenEx(
+                    name,
+                    gdal.OF_VECTOR,
+                    open_options=[
+                        "X={}".format(tx),
+                        "Y={}".format(ty),
+                        "Z={}".format(zoom),
+                    ],
+                )
                 layer = tile.GetLayerByName("WA") if tile is not None else None
                 if layer is not None:
                     for feature in layer:
@@ -213,10 +245,13 @@ def _water_codes(grid, check):
                             continue
                         item = ogr.Feature(areas.GetLayerDefn())
                         item.SetGeometry(geometry)
-                        item.SetField("vt_code", int(feature.GetField("vt_code") or 1))
+                        item.SetField(
+                            "vt_code", int(feature.GetField("vt_code") or 1)
+                        )
                         areas.CreateFeature(item)
                 tile = None
-            except Exception:  # noqa: BLE001 - not read: the water there is not known
+            # not read: the water there is not known
+            except Exception:  # noqa: BLE001
                 complete = False
             finally:
                 gdal.Unlink(name)
@@ -232,30 +267,50 @@ def _coarse_on_grid(source, need, grid, check):
 
     url, zoom, encoding = source
     rows, cols = np.nonzero(need)
-    bounds = grid.mercator_bounds((rows.min(), rows.max() + 1), (cols.min(), cols.max() + 1))
+    bounds = grid.mercator_bounds(
+        (rows.min(), rows.max() + 1), (cols.min(), cols.max() + 1)
+    )
     tiles = _tile_range(bounds, zoom)
     if _tile_count(tiles) > MAX_TILES:
         return None, None
     x0, y0, x1, y1 = tiles
-    mosaic = np.full(((y1 - y0 + 1) * TILE_SIZE, (x1 - x0 + 1) * TILE_SIZE), np.nan, dtype=np.float32)
+    mosaic = np.full(
+        ((y1 - y0 + 1) * TILE_SIZE, (x1 - x0 + 1) * TILE_SIZE),
+        np.nan,
+        dtype=np.float32,
+    )
     failed = np.zeros((y1 - y0 + 1, x1 - x0 + 1), dtype=bool)
     for ty in range(y0, y1 + 1):
         for tx in range(x0, x1 + 1):
             if check is not None:
                 check()
-            tile, error = GSITileDEMLoader._fetch_tile_array(url.format(z=zoom, x=tx, y=ty), encoding)
+            tile, error = GSITileDEMLoader._fetch_tile_array(
+                url.format(z=zoom, x=tx, y=ty), encoding
+            )
             iy, ix = ty - y0, tx - x0
             if tile is not None:
-                mosaic[iy * TILE_SIZE:(iy + 1) * TILE_SIZE, ix * TILE_SIZE:(ix + 1) * TILE_SIZE] = tile
+                mosaic[
+                    iy * TILE_SIZE: (iy + 1) * TILE_SIZE,
+                    ix * TILE_SIZE: (ix + 1) * TILE_SIZE,
+                ] = tile
             elif error and "404" not in error:
                 # 404: no heights there (the sea). Otherwise not known.
                 failed[iy, ix] = True
-    tile_m = 2.0 * WEB_MERCATOR_LIMIT / (2 ** zoom)
+    tile_m = 2.0 * WEB_MERCATOR_LIMIT / (2**zoom)
     pixel = tile_m / TILE_SIZE
     source_raster = gdal.GetDriverByName("MEM").Create(
-        "", mosaic.shape[1], mosaic.shape[0], 1, gdal.GDT_Float32)
-    source_raster.SetGeoTransform((-WEB_MERCATOR_LIMIT + x0 * tile_m, pixel, 0.0,
-                                   WEB_MERCATOR_LIMIT - y0 * tile_m, 0.0, -pixel))
+        "", mosaic.shape[1], mosaic.shape[0], 1, gdal.GDT_Float32
+    )
+    source_raster.SetGeoTransform(
+        (
+            -WEB_MERCATOR_LIMIT + x0 * tile_m,
+            pixel,
+            0.0,
+            WEB_MERCATOR_LIMIT - y0 * tile_m,
+            0.0,
+            -pixel,
+        )
+    )
     source_raster.SetProjection(grid.mercator.ExportToWkt())
     source_band = source_raster.GetRasterBand(1)
     source_band.SetNoDataValue(float("nan"))
@@ -264,16 +319,27 @@ def _coarse_on_grid(source, need, grid, check):
     target_band = target.GetRasterBand(1)
     target_band.SetNoDataValue(float("nan"))
     target_band.Fill(float("nan"))
-    gdal.Warp(target, source_raster, resampleAlg="bilinear", srcNodata="nan", dstNodata="nan")
+    gdal.Warp(
+        target,
+        source_raster,
+        resampleAlg="bilinear",
+        srcNodata="nan",
+        dstNodata="nan",
+    )
     values = target_band.ReadAsArray().astype(np.float64)
     unread = np.zeros(grid.shape, dtype=bool)
     if failed.any():
         # The cells under the tiles that could not be read.
-        mask = gdal.GetDriverByName("MEM").Create("", mosaic.shape[1], mosaic.shape[0], 1, gdal.GDT_Byte)
+        mask = gdal.GetDriverByName("MEM").Create(
+            "", mosaic.shape[1], mosaic.shape[0], 1, gdal.GDT_Byte
+        )
         mask.SetGeoTransform(source_raster.GetGeoTransform())
         mask.SetProjection(grid.mercator.ExportToWkt())
         mask.GetRasterBand(1).WriteArray(
-            np.kron(failed, np.ones((TILE_SIZE, TILE_SIZE), dtype=np.uint8)).astype(np.uint8))
+            np.kron(
+                failed, np.ones((TILE_SIZE, TILE_SIZE), dtype=np.uint8)
+            ).astype(np.uint8)
+        )
         on_grid = grid.raster(gdal.GDT_Byte)
         gdal.Warp(on_grid, mask, resampleAlg="near")
         unread = on_grid.GetRasterBand(1).ReadAsArray() > 0
@@ -363,11 +429,18 @@ def _fill_terrarium(data, grid, check):
 
     if unknown.any():
         rows, cols = np.nonzero(unknown)
-        bounds = grid.mercator_bounds((rows.min(), rows.max() + 1), (cols.min(), cols.max() + 1))
+        bounds = grid.mercator_bounds(
+            (rows.min(), rows.max() + 1), (cols.min(), cols.max() + 1)
+        )
         zoom = TERRARIUM_MAX_ZOOM
-        while zoom > TERRARIUM_MIN_ZOOM and _tile_count(_tile_range(bounds, zoom)) > MAX_TILES:
+        while (
+            zoom > TERRARIUM_MIN_ZOOM
+            and _tile_count(_tile_range(bounds, zoom)) > MAX_TILES
+        ):
             zoom -= 1
-        values, unread = _coarse_on_grid((TERRARIUM_URL, zoom, "terrarium"), unknown, grid, check)
+        values, unread = _coarse_on_grid(
+            (TERRARIUM_URL, zoom, "terrarium"), unknown, grid, check
+        )
         if values is None:
             raise FillIncomplete("too_wide")
         done = unknown & ~np.isnan(values)
@@ -401,7 +474,9 @@ def memory_vector_datasource():
     """An in-memory vector data source (the MEM driver from GDAL 3.11, where
     the Memory driver is deprecated)."""
     if int(gdal.VersionInfo()) >= 3110000:
-        return gdal.GetDriverByName("MEM").Create("", 0, 0, 0, gdal.GDT_Unknown)
+        return gdal.GetDriverByName("MEM").Create(
+            "", 0, 0, 0, gdal.GDT_Unknown
+        )
     return ogr.GetDriverByName("Memory").CreateDataSource("")
 
 

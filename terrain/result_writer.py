@@ -11,6 +11,7 @@
   overwrite=True のとき固定ファイル名で上書き保存。
   overwrite=False（デフォルト）のときタイムスタンプ付きで追記保存。
 """
+
 import math
 import os
 import numpy as np
@@ -18,6 +19,7 @@ from datetime import datetime
 
 try:
     from osgeo import gdal
+
     gdal.UseExceptions()
     HAS_GDAL = True
 except ImportError:
@@ -47,8 +49,14 @@ def save_raster(data, gt, crs_wkt, out_dir, name_prefix, overwrite=False):
         os.remove(path)
     rows, cols = data.shape
     drv = gdal.GetDriverByName("GTiff")
-    ds = drv.Create(path, cols, rows, 1, gdal.GDT_Float32,
-                    options=["COMPRESS=LZW", "TILED=YES"])
+    ds = drv.Create(
+        path,
+        cols,
+        rows,
+        1,
+        gdal.GDT_Float32,
+        options=["COMPRESS=LZW", "TILED=YES"],
+    )
     ds.SetGeoTransform(gt)
     ds.SetProjection(crs_wkt)
     arr = data.astype(np.float32)
@@ -92,8 +100,9 @@ def _srs_with_epsg(crs_wkt):
     return srs
 
 
-def save_geopdf_dem(dem_path, out_path, crs_wkt, bounds=None, cell=None, fill=None,
-                    check=None):
+def save_geopdf_dem(
+    dem_path, out_path, crs_wkt, bounds=None, cell=None, fill=None, check=None
+):
     """Write the DEM in the GeoPDF's CRS (the preview's) to ``out_path``.
 
     The GeoPDF is in the preview's CRS, while the analysis DEM is in the
@@ -149,7 +158,9 @@ def save_geopdf_dem(dem_path, out_path, crs_wkt, bounds=None, cell=None, fill=No
     # coarser cells over a wide area (a 3D view in the field uses no finer).
     resample = "bilinear"
     longest = max((xmax - xmin) / x_res, (ymax - ymin) / y_res)
-    room = GEOPDF_DEM_MAX_EDGE - 2 * GEOPDF_DEM_MARGIN_CELLS - 2  # margins, rounding
+    room = (
+        GEOPDF_DEM_MAX_EDGE - 2 * GEOPDF_DEM_MARGIN_CELLS - 2
+    )  # margins, rounding
     if longest > room:
         scale = longest / room
         x_res *= scale
@@ -161,10 +172,21 @@ def save_geopdf_dem(dem_path, out_path, crs_wkt, bounds=None, cell=None, fill=No
         # gdal.Warp would warp into the old file instead of replacing it.
         os.remove(out_path)
     result = gdal.Warp(
-        out_path, source, format="GTiff", dstSRS=target,
-        outputBounds=(xmin - x_margin, ymin - y_margin, xmax + x_margin, ymax + y_margin),
-        xRes=x_res, yRes=y_res,
-        resampleAlg=resample, srcNodata=NODATA, dstNodata=NODATA,
+        out_path,
+        source,
+        format="GTiff",
+        dstSRS=target,
+        outputBounds=(
+            xmin - x_margin,
+            ymin - y_margin,
+            xmax + x_margin,
+            ymax + y_margin,
+        ),
+        xRes=x_res,
+        yRes=y_res,
+        resampleAlg=resample,
+        srcNodata=NODATA,
+        dstNodata=NODATA,
         outputType=gdal.GDT_Float32,
         creationOptions=["COMPRESS=NONE", "TILED=NO", "BIGTIFF=NO"],
     )
@@ -191,7 +213,8 @@ def save_geopdf_dem(dem_path, out_path, crs_wkt, bounds=None, cell=None, fill=No
             except OSError:
                 pass
             raise
-        except Exception as error:  # noqa: BLE001 - cancel goes on; else the simple fill
+        # cancel goes on; else the simple fill
+        except Exception as error:  # noqa: BLE001
             if type(error).__name__ in ("TerrainJobCancelled", "Cancelled"):
                 raise
     from . import watershed
@@ -222,8 +245,12 @@ def covers(path, crs_wkt, bounds=None):
     xmin, ymax = gt[0], gt[3]
     xmax, ymin = xmin + columns * gt[1], ymax + rows * gt[5]
     slack = abs(gt[1])
-    return (xmin - slack <= bounds[0] and ymin - slack <= bounds[1]
-            and bounds[2] <= xmax + slack and bounds[3] <= ymax + slack)
+    return (
+        xmin - slack <= bounds[0]
+        and ymin - slack <= bounds[1]
+        and bounds[2] <= xmax + slack
+        and bounds[3] <= ymax + slack
+    )
 
 
 def save_rgba_raster(data, gt, crs_wkt, out_dir, name_prefix, overwrite=False):
@@ -248,7 +275,9 @@ def save_rgba_raster(data, gt, crs_wkt, out_dir, name_prefix, overwrite=False):
         # 4帯目を非乗算アルファとしてタグ付け（EXTRASAMPLES=2）。
         # これがないと GDAL/QGIS がただの余分な帯として扱い透過しない。
         create_opts.append("ALPHA=YES")
-    ds = drv.Create(path, cols, rows, bands, gdal.GDT_Byte, options=create_opts)
+    ds = drv.Create(
+        path, cols, rows, bands, gdal.GDT_Byte, options=create_opts
+    )
     ds.SetGeoTransform(gt)
     ds.SetProjection(crs_wkt)
     arr = data.astype(np.uint8, copy=False)

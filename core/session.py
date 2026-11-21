@@ -71,7 +71,8 @@ def prune_empty_groups(root):
         (
             child
             for child in root.children()
-            if isinstance(child, QgsLayerTreeGroup) and child.name() == PLUGIN_NAME
+            if isinstance(child, QgsLayerTreeGroup)
+            and child.name() == PLUGIN_NAME
         ),
         None,
     )

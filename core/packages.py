@@ -17,6 +17,7 @@ EXPORTS_FOLDER = "exports"
 # print layout of the exported group (no link to the ZIP is needed).
 LAYOUT_RECORD_NAME = "qlae_layout.json"
 MANIFEST_NAME = "analysis.json"
+GEOPDF_MEMBER = "data/geopdf.pdf"
 
 
 class PackageError(Exception):
@@ -40,11 +41,14 @@ def package_file_name(analysis_name):
 
 
 def export_directory(package_path_value):
-    """Where the Layers export writes an analysis: exports/<name>/ beside analyses/."""
+    ('Where the Layers export writes an analysis: exports/<name>/ beside '
+     'analyses/.')
 
     absolute = os.path.abspath(package_path_value)
     root = os.path.dirname(os.path.dirname(absolute))
-    return os.path.join(root, EXPORTS_FOLDER, os.path.splitext(os.path.basename(absolute))[0])
+    return os.path.join(
+        root, EXPORTS_FOLDER, os.path.splitext(os.path.basename(absolute))[0]
+    )
 
 
 def package_path(project_directory, analysis_name):
@@ -65,6 +69,73 @@ def read_manifest(path):
     return manifest
 
 
+def replace_geopdf(package_path_value, pdf_path, dem_path=None):
+    ('Replace the optional GeoPDF in a package without changing its '
+     'analysis data.')
+
+    manifest, temporary = stage_geopdf(package_path_value, pdf_path, dem_path)
+    try:
+        os.replace(temporary, os.path.abspath(package_path_value))
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    return manifest
+
+
+def stage_geopdf(package_path_value, pdf_path, dem_path=None):
+    ('Build a replacement ZIP; the caller must swap it after releasing '
+     'ZIP layers.')
+
+    manifest = read_manifest(package_path_value)
+    outputs = manifest.setdefault("outputs", {})
+    previous = outputs.get("geopdf")
+    dem_member = outputs.get("dem_geopdf") if dem_path else None
+    outputs["geopdf"] = GEOPDF_MEMBER
+    path = os.path.abspath(package_path_value)
+    temporary = path + ".{}.tmp".format(uuid.uuid4().hex)
+    try:
+        with (
+            zipfile.ZipFile(path) as source,
+            zipfile.ZipFile(temporary, "w", allowZip64=True) as target,
+        ):
+            for info in source.infolist():
+                if info.filename in (
+                    MANIFEST_NAME,
+                    previous,
+                    GEOPDF_MEMBER,
+                    dem_member,
+                ):
+                    continue
+                if info.is_dir():
+                    target.writestr(info, b"")
+                else:
+                    with (
+                        source.open(info) as input_stream,
+                        target.open(info, "w") as output_stream,
+                    ):
+                        shutil.copyfileobj(
+                            input_stream, output_stream, 1024 * 1024
+                        )
+            target.writestr(
+                MANIFEST_NAME,
+                json.dumps(manifest, ensure_ascii=False, indent=2).encode(
+                    "utf-8"
+                ),
+            )
+            target.write(
+                pdf_path, GEOPDF_MEMBER, compress_type=zipfile.ZIP_STORED
+            )
+            if dem_member:
+                target.write(
+                    dem_path, dem_member, compress_type=zipfile.ZIP_STORED
+                )
+    except BaseException:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+        raise
+    return manifest, temporary
+
+
 def normalized_name(analysis_name):
     """The analysis name as it is stored: runs of spaces become one."""
 
@@ -74,11 +145,15 @@ def normalized_name(analysis_name):
 def renamed_package_path(path, new_name):
     """Where ``path`` goes when renamed to ``new_name`` (same folder)."""
 
-    return os.path.join(os.path.dirname(os.path.abspath(path)), package_file_name(new_name))
+    return os.path.join(
+        os.path.dirname(os.path.abspath(path)), package_file_name(new_name)
+    )
 
 
 def is_same_file_path(first, second):
-    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(
+        os.path.abspath(second)
+    )
 
 
 def rename_package(path, new_name):
@@ -98,12 +173,17 @@ def rename_package(path, new_name):
         raise PackageError("analysis_name_taken")
     manifest = read_manifest(path)
     manifest["analysis_name"] = name
-    payload = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+    payload = json.dumps(manifest, ensure_ascii=False, indent=2).encode(
+        "utf-8"
+    )
     temporary = new_path + ".{}.tmp".format(uuid.uuid4().hex)
     try:
-        with zipfile.ZipFile(path, "r") as source, zipfile.ZipFile(
-            temporary, "w", compression=zipfile.ZIP_STORED, allowZip64=True
-        ) as target:
+        with (
+            zipfile.ZipFile(path, "r") as source,
+            zipfile.ZipFile(
+                temporary, "w", compression=zipfile.ZIP_STORED, allowZip64=True
+            ) as target,
+        ):
             for info in source.infolist():
                 copied = zipfile.ZipInfo(info.filename, info.date_time)
                 copied.compress_type = zipfile.ZIP_STORED
@@ -113,7 +193,10 @@ def rename_package(path, new_name):
                     continue
                 # The size lets zipfile choose ZIP64 for large members.
                 copied.file_size = info.file_size
-                with source.open(info) as reader, target.open(copied, "w") as writer:
+                with (
+                    source.open(info) as reader,
+                    target.open(copied, "w") as writer,
+                ):
                     shutil.copyfileobj(reader, writer, 1024 * 1024)
         if same_file:
             os.replace(temporary, path)
@@ -149,7 +232,9 @@ def list_packages(project_directory):
         packages.append((manifest["analysis_name"], path, manifest))
     # Newest analysis first (renaming does not change the order).
     packages.sort(key=lambda package: package[0].casefold())
-    packages.sort(key=lambda package: _made_at(package[1], package[2]), reverse=True)
+    packages.sort(
+        key=lambda package: _made_at(package[1], package[2]), reverse=True
+    )
     return packages
 
 
@@ -157,7 +242,9 @@ def _made_at(path, manifest):
     """When the analysis was made (seconds since 1970), for sorting."""
 
     try:
-        return datetime.datetime.fromisoformat(manifest.get("created_at", "")).timestamp()
+        return datetime.datetime.fromisoformat(
+            manifest.get("created_at", "")
+        ).timestamp()
     except (TypeError, ValueError):
         # A missing or unreadable time: the file's modification time instead.
         return os.path.getmtime(path)

@@ -7,4 +7,12 @@ from .common import (
     NotSupportedError,
 )
 
+__all__ = [
+    "DefusedXmlException",
+    "DTDForbidden",
+    "EntitiesForbidden",
+    "ExternalReferenceForbidden",
+    "NotSupportedError",
+]
+
 __version__ = "0.7.1"

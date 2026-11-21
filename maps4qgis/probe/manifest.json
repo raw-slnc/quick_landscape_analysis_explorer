@@ -1,0 +1,26 @@
+{
+  "id": "/avid/fieldmap/probe/",
+  "name": "PWA Probe",
+  "short_name": "Probe",
+  "description": "fieldmap の PWA 比較用ミニマルアプリ",
+  "start_url": "/avid/fieldmap/probe/",
+  "scope": "/avid/fieldmap/probe/",
+  "display": "standalone",
+  "background_color": "#102417",
+  "theme_color": "#102417",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/avid/fieldmap/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable any"
+    },
+    {
+      "src": "/avid/fieldmap/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable any"
+    }
+  ]
+}

@@ -49,7 +49,8 @@ from .terrain.dem_loader import GSITileDEMLoader
 from .ui_fonts import use_plugin_font
 
 
-# Units the file's coordinates and heights can be read in (local_convert.UNITS_M).
+# Units the file's coordinates and heights can be read in
+# (local_convert.UNITS_M).
 UNIT_CHOICES = ("m", "cm", "mm")
 # A converted DEM is compared with the network DEM up to this many tiles.
 CONVERT_COMPARE_MAX_TILES = 100
@@ -121,7 +122,9 @@ def bbox84(crs, extent):
     except QgsCsException:
         return None
     values = (box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum())
-    finite = all(value == value and abs(value) != float("inf") for value in values)
+    finite = all(
+        value == value and abs(value) != float("inf") for value in values
+    )
     if (
         box.isEmpty()
         or not finite
@@ -145,7 +148,9 @@ def local_source_error_text(error):
             "It is an 8-bit raster (256 levels), not an elevation raster.",
             "8ビット（256段階）のラスタで、標高のラスタではありません。",
         ),
-        "too_large": tr("It is too large to convert.", "大きすぎて変換できません。"),
+        "too_large": tr(
+            "It is too large to convert.", "大きすぎて変換できません。"
+        ),
         "no_values": tr("It holds no values.", "値が入っていません。"),
         "cannot_open_cad": tr(
             "This CAD file cannot be read. For DWG, save it as DXF in the CAD "
@@ -153,19 +158,26 @@ def local_source_error_text(error):
             "このCADファイルを読めません。DWGは、CADソフトや変換ツールでDXFに"
             "保存し直して、そのDXFを選んでください。",
         ),
-        "cad_empty": tr("The drawing holds no shapes.", "図面に図形がありません。"),
+        "cad_empty": tr(
+            "The drawing holds no shapes.", "図面に図形がありません。"
+        ),
         "cad_no_heights": tr(
-            "No shape in the drawing (or the chosen layers) has heights (all at 0). "
+            'No shape in the drawing (or the chosen layers) has heights '
+            '(all at 0). '
             "A drawing with heights written only as text cannot be used.",
             "図面（選んだレイヤー）に高さを持つ図形がありません（すべて0）。"
             "高さが文字で書かれているだけの図面は使えません。",
         ),
-        "cad_no_extent": tr("The shapes have no extent.", "図形に広がりがありません。"),
+        "cad_no_extent": tr(
+            "The shapes have no extent.", "図形に広がりがありません。"
+        ),
         "cad_grid_failed": tr(
             "The heights could not be put on a grid.",
             "高さを格子にできませんでした。",
         ),
-        "write_failed": tr("The DEM could not be written.", "DEMを書き出せませんでした。"),
+        "write_failed": tr(
+            "The DEM could not be written.", "DEMを書き出せませんでした。"
+        ),
     }
     return texts.get(code, code)
 
@@ -236,11 +248,17 @@ class ConversionDialog(QDialog):
         bottom = self._build_progress()
 
         self._buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            self,
         )
-        self._okButton = self._buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self._okButton = self._buttons.button(
+            QDialogButtonBox.StandardButton.Ok
+        )
         self._okButton.setText(tr("Convert", "変換する"))
-        self._cancelButton = self._buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        self._cancelButton = self._buttons.button(
+            QDialogButtonBox.StandardButton.Cancel
+        )
         self._buttons.accepted.connect(self._convert)
         self._buttons.rejected.connect(self.reject)
         # The step under way and its progress on the row of the buttons.
@@ -274,16 +292,22 @@ class ConversionDialog(QDialog):
             self,
         )
         status.setStyleSheet("color: {};".format(self._quiet_colour()))
-        status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        status.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop
+        )
         intro = self._paragraph(
             tr(
-                "This file has no position. It is converted to a DEM in the steps below.",
+                ('This file has no position. It is converted to a DEM in '
+                 'the steps below.'),
                 "このファイルには位置情報がありません。次の手順でDEMに変換します。",
             )
         )
         # Indented under the file name, like the contents of the steps.
         intro.setContentsMargins(
-            self.style().pixelMetric(QStyle.PixelMetric.PM_LayoutLeftMargin), 0, 0, 0
+            self.style().pixelMetric(QStyle.PixelMetric.PM_LayoutLeftMargin),
+            0,
+            0,
+            0,
         )
         intro_row = QHBoxLayout()
         intro_row.setContentsMargins(0, 0, 0, 0)
@@ -298,48 +322,64 @@ class ConversionDialog(QDialog):
 
         text = self.palette().color(QPalette.ColorRole.WindowText)
         ground = self.palette().color(QPalette.ColorRole.Window)
-        return "rgb({}, {}, {})".format(*(
-            round(t * 0.6 + g * 0.4)
-            for t, g in zip(
-                (text.red(), text.green(), text.blue()),
-                (ground.red(), ground.green(), ground.blue()),
+        return "rgb({}, {}, {})".format(
+            *(
+                round(t * 0.6 + g * 0.4)
+                for t, g in zip(
+                    (text.red(), text.green(), text.blue()),
+                    (ground.red(), ground.green(), ground.blue()),
+                )
             )
-        ))
+        )
 
     def _build_crs_step(self, crs):
         box = QGroupBox(self)
         box_layout = QVBoxLayout(box)
-        box_layout.addWidget(self._paragraph(
-            tr(
-                "Choose the coordinate system the file's coordinates are in. They "
-                "are used as they are, so place, orientation and size follow from it.",
-                "ファイルの座標を、どの座標系の値として読むかを選びます。座標はそのまま"
-                "使うので、位置・向き・大きさはこの座標系で決まります。",
-            ),
-            box,
-        ))
+        box_layout.addWidget(
+            self._paragraph(
+                tr(
+                    "Choose the coordinate system the file's coordinates "
+                    'are in. They '
+                    'are used as they are, so place, orientation and '
+                    'size follow from it.',
+                    "ファイルの座標を、どの座標系の値として読むかを選びます。座標はそのまま"
+                    "使うので、位置・向き・大きさはこの座標系で決まります。",
+                ),
+                box,
+            )
+        )
         box_layout.addSpacing(self._PARAGRAPH_GAP)
-        box_layout.addWidget(self._paragraph(
-            tr(
-                "Survey drawings are usually in plane rectangular coordinates (one zone).",
-                "測量の図面は、ふつう平面直角座標（いずれかの系）で描かれています。",
-            ),
-            box,
-        ))
-        box_layout.addWidget(self._paragraph(
-            tr(
-                "A drawing with X and Y the other way round, or in mm, is read right "
-                "with the settings on the right.",
-                "XとYが入れ替わった図面やmm単位の図面は、右の設定で読み方を変えます。",
-            ),
-            box,
-        ))
+        box_layout.addWidget(
+            self._paragraph(
+                tr(
+                    ('Survey drawings are usually in plane rectangular '
+                     'coordinates (one zone).'),
+                    "測量の図面は、ふつう平面直角座標（いずれかの系）で描かれています。",
+                ),
+                box,
+            )
+        )
+        box_layout.addWidget(
+            self._paragraph(
+                tr(
+                    'A drawing with X and Y the other way round, or in '
+                    'mm, is read right '
+                    "with the settings on the right.",
+                    "XとYが入れ替わった図面やmm単位の図面は、右の設定で読み方を変えます。",
+                ),
+                box,
+            )
+        )
         box_layout.addSpacing(self._PARAGRAPH_GAP)
         # Label and selector as wide as one column of the layer list below
         # (half the step's width), not stretched across the window.
         holder = QWidget(box)
-        margin = self.style().pixelMetric(QStyle.PixelMetric.PM_LayoutLeftMargin)
-        holder.setFixedWidth((self._WIDTH - 4 * margin - self._COLUMN_GAP) // 2)
+        margin = self.style().pixelMetric(
+            QStyle.PixelMetric.PM_LayoutLeftMargin
+        )
+        holder.setFixedWidth(
+            (self._WIDTH - 4 * margin - self._COLUMN_GAP) // 2
+        )
         crs_row = QHBoxLayout(holder)
         crs_row.setContentsMargins(0, 0, 0, 0)
         crs_row.addWidget(QLabel(tr("Coordinate system", "座標系"), holder))
@@ -348,10 +388,13 @@ class ConversionDialog(QDialog):
         self.crsWidget.crsChanged.connect(self._update_ok)
         crs_row.addWidget(self.crsWidget, 1)
         # Then how the coordinates are read (X/Y swapped, unit), side by side.
-        self.swapCheck = QCheckBox(tr("Swap X and Y", "XとYを入れ替えて読む"), box)
+        self.swapCheck = QCheckBox(
+            tr("Swap X and Y", "XとYを入れ替えて読む"), box
+        )
         self.swapCheck.setToolTip(
             tr(
-                "For drawings whose survey X (north) and Y (east) were drawn as x "
+                'For drawings whose survey X (north) and Y (east) were '
+                'drawn as x '
                 "and y as they are.",
                 "測量のX（北）とY（東）を、そのままx・yとして描いた図面のためのものです。",
             )
@@ -382,15 +425,18 @@ class ConversionDialog(QDialog):
 
         box = QGroupBox(self)
         box_layout = QVBoxLayout(box)
-        box_layout.addWidget(self._paragraph(
-            tr(
-                "Check the layers of the ground: contour lines, spot heights and "
-                "the like. Leave out buildings and planned surfaces.",
-                "地面の高さ（等高線・標高点など）のレイヤーを選びます。建物や計画面の"
-                "レイヤーは外します。",
-            ),
-            box,
-        ))
+        box_layout.addWidget(
+            self._paragraph(
+                tr(
+                    'Check the layers of the ground: contour lines, spot '
+                    'heights and '
+                    "the like. Leave out buildings and planned surfaces.",
+                    "地面の高さ（等高線・標高点など）のレイヤーを選びます。建物や計画面の"
+                    "レイヤーは外します。",
+                ),
+                box,
+            )
+        )
         box_layout.addSpacing(self._PARAGRAPH_GAP)
         self._flatLabel = self._paragraph("", box)
         self._flatLabel.setVisible(False)
@@ -398,7 +444,9 @@ class ConversionDialog(QDialog):
         area = QScrollArea(box)
         area.setFrameShape(QFrame.Shape.NoFrame)
         area.setWidgetResizable(True)
-        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         holder = QWidget(area)
         # Two columns, filled row by row.
         self._layerGrid = QGridLayout(holder)
@@ -420,7 +468,8 @@ class ConversionDialog(QDialog):
         measure.deleteLater()
         rows = self._LAYER_ROWS_SHOWN
         area.setFixedHeight(
-            rows * row_height + (rows - 1) * self._layerGrid.verticalSpacing()
+            rows * row_height
+            + (rows - 1) * self._layerGrid.verticalSpacing()
             + self._LIST_MARGIN
         )
         box_layout.addWidget(area)
@@ -442,26 +491,34 @@ class ConversionDialog(QDialog):
     def _build_after_step(self):
         box = QGroupBox(self)
         box_layout = QVBoxLayout(box)
-        box_layout.addWidget(self._paragraph(
-            tr(
-                "The DEM is saved beside the project and becomes the local DEM.",
-                "変換したDEMはプロジェクトの横に保存し、ローカルDEMにします。",
-            ),
-            box,
-        ))
+        box_layout.addWidget(
+            self._paragraph(
+                tr(
+                    ('The DEM is saved beside the project and becomes the '
+                     'local DEM.'),
+                    "変換したDEMはプロジェクトの横に保存し、ローカルDEMにします。",
+                ),
+                box,
+            )
+        )
         box_layout.addSpacing(self._PARAGRAPH_GAP)
-        box_layout.addWidget(self._paragraph(
-            tr(
-                "It is then compared with a network DEM (GSI elevation tiles in Japan, "
-                "AWS Terrarium elsewhere). When it is done this window closes; the "
-                "agreement and notes are shown under \"Status\". A low agreement means "
-                "the coordinate system or the units need checking.",
-                "続けてネットワークDEM（日本は国土地理院 標高タイル、ほかは AWS Terrarium）"
-                "と比べます。終わるとこの窓は閉じ、一致率と注意事項は「状態」の欄に出ます。"
-                "一致率が低いときは、座標系や単位を確かめてください。",
-            ),
-            box,
-        ))
+        box_layout.addWidget(
+            self._paragraph(
+                tr(
+                    'It is then compared with a network DEM (GSI '
+                    'elevation tiles in Japan, '
+                    'AWS Terrarium elsewhere). When it is done this '
+                    'window closes; the '
+                    'agreement and notes are shown under "Status". A low '
+                    'agreement means '
+                    "the coordinate system or the units need checking.",
+                    "続けてネットワークDEM（日本は国土地理院 標高タイル、ほかは AWS Terrarium）"
+                    "と比べます。終わるとこの窓は閉じ、一致率と注意事項は「状態」の欄に出ます。"
+                    "一致率が低いときは、座標系や単位を確かめてください。",
+                ),
+                box,
+            )
+        )
         return box
 
     def _build_progress(self):
@@ -474,7 +531,9 @@ class ConversionDialog(QDialog):
         self._stageLabel = QLabel(self)
         self._progressBar = QProgressBar(self)
         self._progressBar.setTextVisible(False)
-        self._progressBar.setMaximumHeight(self._stageLabel.sizeHint().height())
+        self._progressBar.setMaximumHeight(
+            self._stageLabel.sizeHint().height()
+        )
         self._progressBar.setFixedWidth(self._PROGRESS_WIDTH)
         row.addWidget(self._progressBar)
         row.addWidget(self._stageLabel, 1)
@@ -486,19 +545,28 @@ class ConversionDialog(QDialog):
         step = 2
         if self._layersBox.isVisibleTo(self):
             self._layersBox.setTitle(
-                tr("{}. CAD layers for the DEM", "{}. DEMにするレイヤー").format(step)
+                tr(
+                    "{}. CAD layers for the DEM", "{}. DEMにするレイヤー"
+                ).format(step)
             )
             step += 1
-        self._afterBox.setTitle(tr("{}. After the conversion", "{}. 変換の後").format(step))
+        self._afterBox.setTitle(
+            tr("{}. After the conversion", "{}. 変換の後").format(step)
+        )
 
     def _fill_layers(self, layers):
-        """The drawing's CAD layers: those with heights to check, others counted."""
+        ("The drawing's CAD layers: those with heights to check, others "
+         'counted.')
 
-        self._heightLayers = [(name, count) for name, count, _flat in layers if count]
+        self._heightLayers = [
+            (name, count) for name, count, _flat in layers if count
+        ]
         flat_count = sum(1 for _name, count, _flat in layers if not count)
         for index, (layer, count) in enumerate(self._heightLayers):
             check = QCheckBox(
-                tr("{} ({} shapes with heights)", "{}（高さのある図形 {}）").format(layer, count),
+                tr(
+                    "{} ({} shapes with heights)", "{}（高さのある図形 {}）"
+                ).format(layer, count),
                 self._layerHolder,
             )
             check.setProperty("cadLayer", layer)
@@ -510,7 +578,8 @@ class ConversionDialog(QDialog):
         if flat_count:
             self._flatLabel.setText(
                 tr(
-                    "{} layers without heights are not listed (they cannot make a DEM).",
+                    ('{} layers without heights are not listed (they '
+                     'cannot make a DEM).'),
                     "高さの無いレイヤー {} は一覧に出していません（DEMにできません）。",
                 ).format(flat_count)
             )
@@ -531,11 +600,16 @@ class ConversionDialog(QDialog):
         return self.unitCombo.currentData()
 
     def chosenLayers(self):
-        """The CAD layers to use (all with heights when there was no choice)."""
+        ('The CAD layers to use (all with heights when there was no '
+         'choice).')
 
         if len(self._heightLayers) <= 1:
             return [name for name, _count in self._heightLayers]
-        return [check.property("cadLayer") for check in self._checks if check.isChecked()]
+        return [
+            check.property("cadLayer")
+            for check in self._checks
+            if check.isChecked()
+        ]
 
     def conversionResult(self):
         """{"path": the converted DEM, "record": its record}, once done."""
@@ -568,7 +642,9 @@ class ConversionDialog(QDialog):
         self._working = working
         for box in (self._crsBox, self._layersBox):
             box.setEnabled(not working)
-        self._cancelButton.setText(tr("Stop", "中止") if working else tr("Cancel", "取消"))
+        self._cancelButton.setText(
+            tr("Stop", "中止") if working else tr("Cancel", "取消")
+        )
         self._cancelButton.setEnabled(True)
         self._update_ok()
         if working:
@@ -617,10 +693,16 @@ class ConversionDialog(QDialog):
     def _remaining_ms(self):
         if not self._shownStep:
             return 0
-        return max(0, int(self._MIN_STAGE_MS - (time.monotonic() - self._shownAt) * 1000))
+        return max(
+            0,
+            int(
+                self._MIN_STAGE_MS - (time.monotonic() - self._shownAt) * 1000
+            ),
+        )
 
     def _after_shown(self, action):
-        """Run ``action`` once the step shown (and any waiting) has been seen."""
+        ('Run ``action`` once the step shown (and any waiting) has been '
+         'seen.')
 
         self._afterShown = action
         self._run_after_shown()
@@ -639,7 +721,9 @@ class ConversionDialog(QDialog):
         call = BackgroundCall(function, self)
         call.progress.connect(self._show_progress)
         call.done.connect(
-            lambda result, error, call=call: self._call_done(call, finished, result, error)
+            lambda result, error, call=call: self._call_done(
+                call, finished, result, error
+            )
         )
         self._call = call
         self._update_ok()
@@ -690,7 +774,9 @@ class ConversionDialog(QDialog):
             call.report(text, 0.0 if cad else -1.0)
             if cad:
                 return local_convert.CadDrawing(
-                    path, progress=lambda fraction: call.report(text, fraction), check=call.check
+                    path,
+                    progress=lambda fraction: call.report(text, fraction),
+                    check=call.check,
                 )
             return local_convert.open_raster(path)
 
@@ -712,7 +798,9 @@ class ConversionDialog(QDialog):
             self._fill_layers(source.layers())
             if not self._heightLayers:
                 self._show_problem(
-                    local_source_error_text(local_convert.LocalSourceError("cad_no_heights"))
+                    local_source_error_text(
+                        local_convert.LocalSourceError("cad_no_heights")
+                    )
                 )
                 self._okButton.setEnabled(False)
                 return
@@ -736,9 +824,12 @@ class ConversionDialog(QDialog):
             "crs": crs.authid() or crs_wkt,
             "unit": unit,
             "swapped_xy": swap,
-            "method": "the file's coordinates taken as they are, in the chosen "
+            "method": "the file's coordinates taken as they are, in the "
+                      'chosen '
             "coordinate system (nothing placed by hand)",
-            "converted_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "converted_at": datetime.datetime.now(
+                datetime.timezone.utc
+            ).isoformat(),
         }
         grid_text = tr("Making the grid…", "格子にしています…")
         save_text = tr("Saving…", "保存しています…")
@@ -747,7 +838,11 @@ class ConversionDialog(QDialog):
             call.report(grid_text, 0.0)
             if isinstance(source, local_convert.CadDrawing):
                 grid = local_convert.grid_cad(
-                    source, layers, check=call.check, unit=unit, swap=swap,
+                    source,
+                    layers,
+                    check=call.check,
+                    unit=unit,
+                    swap=swap,
                     progress=lambda fraction: call.report(grid_text, fraction),
                 )
             else:
@@ -755,12 +850,17 @@ class ConversionDialog(QDialog):
             call.check()
             call.report(save_text, -1.0)
             local_convert.write_converted(
-                grid, crs_wkt, target, dict(record, source=grid.info, cell=grid.cell)
+                grid,
+                crs_wkt,
+                target,
+                dict(record, source=grid.info, cell=grid.cell),
             )
             return local_convert.grid_extent(grid)
 
         self._set_working(True, grid_text)
-        self._run(convert, lambda extent, error: self._converted(crs, extent, error))
+        self._run(
+            convert, lambda extent, error: self._converted(crs, extent, error)
+        )
 
     def _converted(self, crs, extent, error):
         if error is not None:
@@ -784,15 +884,25 @@ class ConversionDialog(QDialog):
             sources = GSITileDEMLoader.TERRARIUM_SOURCES[1:2]
             kind = "terrarium"
         zoom = sources[0][1]
-        x0, y0 = GSITileDEMLoader._lonlat_to_tile(box.xMinimum(), box.yMaximum(), zoom)
-        x1, y1 = GSITileDEMLoader._lonlat_to_tile(box.xMaximum(), box.yMinimum(), zoom)
+        x0, y0 = GSITileDEMLoader._lonlat_to_tile(
+            box.xMinimum(), box.yMaximum(), zoom
+        )
+        x1, y1 = GSITileDEMLoader._lonlat_to_tile(
+            box.xMaximum(), box.yMinimum(), zoom
+        )
         if (x1 - x0 + 1) * (y1 - y0 + 1) > CONVERT_COMPARE_MAX_TILES:
             self._finish({"reference": kind, "skipped": "too_wide"})
             return
-        bounds = (box.xMinimum(), box.yMinimum(), box.xMaximum(), box.yMaximum())
+        bounds = (
+            box.xMinimum(),
+            box.yMinimum(),
+            box.xMaximum(),
+            box.yMaximum(),
+        )
         target = self._target
         fetch_text = tr(
-            "Fetching the network DEM ({}/{})…", "ネットワークDEMを取得しています（{}/{}）…"
+            "Fetching the network DEM ({}/{})…",
+            "ネットワークDEMを取得しています（{}/{}）…",
         )
         compare_text = tr("Comparing…", "比べています…")
         # The count of tiles changes within this one step.
@@ -806,7 +916,9 @@ class ConversionDialog(QDialog):
                 sources=sources,
                 cancel_cb=call.cancelled,
                 progress_cb=lambda done, total: call.report(
-                    fetch_text.format(done, total), done / max(1, total), fetch_step
+                    fetch_text.format(done, total),
+                    done / max(1, total),
+                    fetch_step,
                 ),
             )
             call.check()
@@ -814,12 +926,16 @@ class ConversionDialog(QDialog):
                 return None, None
             call.report(compare_text, -1.0)
             fit = local_convert.compare_with_reference(
-                target, (loader.data, loader.gt, loader.crs_wkt), check=call.check
+                target,
+                (loader.data, loader.gt, loader.crs_wkt),
+                check=call.check,
             )
             return fit, getattr(loader, "_used_source_label", None)
 
         self._set_working(True, fetch_text.format(0, "…"), fetch_step)
-        self._run(compare, lambda result, error: self._compared(kind, result, error))
+        self._run(
+            compare, lambda result, error: self._compared(kind, result, error)
+        )
 
     def _compared(self, kind, result, error):
         if isinstance(error, Stopped):

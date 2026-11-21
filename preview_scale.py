@@ -36,7 +36,9 @@ class ScaleLimitSuspender:
             rules = []
             if isinstance(renderer, QgsRuleBasedRenderer):
                 for rule in _all_rules(renderer.rootRule()):
-                    rules.append((rule, rule.minimumScale(), rule.maximumScale()))
+                    rules.append(
+                        (rule, rule.minimumScale(), rule.maximumScale())
+                    )
             had_limits = layer.hasScaleBasedVisibility()
             if not had_limits and not any(lo or hi for _r, lo, hi in rules):
                 continue
@@ -59,7 +61,9 @@ class ScaleLimitSuspender:
         for layer_id in list(self._saved):
             if layer_id in keep:
                 continue
-            layer, had_limits, renderer_address, rules = self._saved.pop(layer_id)
+            layer, had_limits, renderer_address, rules = self._saved.pop(
+                layer_id
+            )
             if not _alive(layer):
                 continue
             layer.setScaleBasedVisibility(had_limits)

@@ -37,7 +37,8 @@ from . import remote_dem, sources
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "data", "coverage")
 _USER_AGENT = "Mozilla/5.0 (compatible; QGIS plugin)"
 
-IGN_WFS = "https://data.geopf.fr/wfs/ows?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature"
+IGN_WFS = ('https://data.geopf.fr/wfs/ows?SERVICE=WFS&VERSION=2.0.0&REQUES'
+           'T=GetFeature')
 IGN_LAYER = "IGNF_LIDAR-HD_METADONNEE:metadata"
 IGN_PAGE = 5000
 
@@ -45,12 +46,14 @@ IGN_PAGE = 5000
 # tile width and height in its units, the top-left corner of its tile
 # numbering, the check interval in days, whether to ask before an update).
 GRIDS = {
-    key: source["coverage"] for key, source in sources.SOURCES.items()
+    key: source["coverage"]
+    for key, source in sources.SOURCES.items()
     if "epsg" in source.get("coverage", {})
 }
 # Covered whole: the country's shape from QGIS's world map.
 WHOLE_COUNTRY = {
-    key: source["coverage"]["whole_country"] for key, source in sources.SOURCES.items()
+    key: source["coverage"]["whole_country"]
+    for key, source in sources.SOURCES.items()
     if "whole_country" in source.get("coverage", {})
 }
 KEYS = tuple(GRIDS) + tuple(WHOLE_COUNTRY)
@@ -80,8 +83,14 @@ class Coverage:
     def to_json(self):
         rows, cols = self.mask.shape
         return {
-            "key": self.key, "epsg": self.epsg, "x0": self.x0, "y_top": self.y_top,
-            "rows": rows, "cols": cols, "date": self.date, "count": self.count,
+            "key": self.key,
+            "epsg": self.epsg,
+            "x0": self.x0,
+            "y_top": self.y_top,
+            "rows": rows,
+            "cols": cols,
+            "date": self.date,
+            "count": self.count,
             "made": datetime.date.today().isoformat(),
         }
 
@@ -96,9 +105,17 @@ class Coverage:
         if packed is None:
             raise ValueError("no mask")
         bits = np.frombuffer(zlib.decompress(packed), dtype=np.uint8)
-        mask = np.unpackbits(bits)[: rows * cols].reshape(rows, cols).astype(bool)
-        return cls(data["key"], data["x0"], data["y_top"], mask,
-                   data.get("date", ""), data.get("count", 0))
+        mask = (
+            np.unpackbits(bits)[: rows * cols].reshape(rows, cols).astype(bool)
+        )
+        return cls(
+            data["key"],
+            data["x0"],
+            data["y_top"],
+            mask,
+            data.get("date", ""),
+            data.get("count", 0),
+        )
 
     @classmethod
     def from_cells(cls, key, cells, date="", count=0):
@@ -118,8 +135,12 @@ class Coverage:
             return
         own_c0 = int(round((self.x0 - _ORIGINS[self.key][0]) / self.cell_w))
         own_r0 = int(round((_ORIGINS[self.key][1] - self.y_top) / self.cell_h))
-        all_cells = [(own_c0 + c, own_r0 + r) for r, c in zip(*np.nonzero(self.mask))]
-        merged = Coverage.from_cells(self.key, all_cells + list(cells), self.date, self.count)
+        all_cells = [
+            (own_c0 + c, own_r0 + r) for r, c in zip(*np.nonzero(self.mask))
+        ]
+        merged = Coverage.from_cells(
+            self.key, all_cells + list(cells), self.date, self.count
+        )
         self.x0, self.y_top, self.mask = merged.x0, merged.y_top, merged.mask
 
     # The shape under a window.
@@ -137,9 +158,19 @@ class Coverage:
         window = self.mask[r0:r1, c0:c1]
         if not window.any():
             return ""
-        raster = gdal.GetDriverByName("MEM").Create("", c1 - c0, r1 - r0, 1, gdal.GDT_Byte)
-        raster.SetGeoTransform((self.x0 + c0 * self.cell_w, self.cell_w, 0.0,
-                                self.y_top - r0 * self.cell_h, 0.0, -self.cell_h))
+        raster = gdal.GetDriverByName("MEM").Create(
+            "", c1 - c0, r1 - r0, 1, gdal.GDT_Byte
+        )
+        raster.SetGeoTransform(
+            (
+                self.x0 + c0 * self.cell_w,
+                self.cell_w,
+                0.0,
+                self.y_top - r0 * self.cell_h,
+                0.0,
+                -self.cell_h,
+            )
+        )
         band = raster.GetRasterBand(1)
         band.WriteArray(window.astype(np.uint8))
         from .dem_gaps import memory_vector_datasource
@@ -150,13 +181,18 @@ class Coverage:
         shapes = ogr.Geometry(ogr.wkbMultiPolygon)
         for feature in layer:
             shapes.AddGeometry(feature.GetGeometryRef().Clone())
-        return shapes.UnionCascaded().ExportToWkt() if shapes.GetGeometryCount() else ""
+        return (
+            shapes.UnionCascaded().ExportToWkt()
+            if shapes.GetGeometryCount()
+            else ""
+        )
 
 
 # The tile numbering of each source: (col, row), row growing downwards from
 # an origin; _ORIGINS gives the origin's top-left corner.
 _ORIGINS = {key: tuple(grid["origin"]) for key, grid in GRIDS.items()}
-_TOPO50_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ"  # without I and O, as remote_dem  # pragma: allowlist secret
+# Omit I and O, as in remote_dem.
+_TOPO50_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ"  # pragma: allowlist secret
 
 
 def _cell_corner(key, col, row):
@@ -172,7 +208,7 @@ _IGN_NORTH_KM = (6000, 7300)
 
 
 def _ign_cell(name):
-    """"0371-6389" (west km, north km) -> (col, row); None outside mainland
+    """ "0371-6389" (west km, north km) -> (col, row); None outside mainland
     France."""
     west, north = (int(part) for part in name.split("-"))
     if not _IGN_NORTH_KM[0] < north <= _IGN_NORTH_KM[1]:
@@ -196,11 +232,15 @@ def _linz_cell(name):
 
 # Loading.
 
+
 def _user_dir():
     from qgis.core import QgsApplication
 
-    return os.path.join(QgsApplication.qgisSettingsDirPath(),
-                        "quick_landscape_analysis_explorer", "coverage")
+    return os.path.join(
+        QgsApplication.qgisSettingsDirPath(),
+        "quick_landscape_analysis_explorer",
+        "coverage",
+    )
 
 
 def _read_json(path):
@@ -231,12 +271,17 @@ def load(key, user_dir=None):
     """The newest grid of a source: the one updated in the profile, else
     the one shipped with the plugin; None if neither."""
     best = None
-    for found in (_read_grid(_DATA_DIR, key), _read_grid(user_dir or _user_dir(), key)):
+    for found in (
+        _read_grid(_DATA_DIR, key),
+        _read_grid(user_dir or _user_dir(), key),
+    ):
         if not found:
             continue
         data = found[0]
         if best is None or (data.get("date", ""), data.get("count", 0)) >= (
-                best[0].get("date", ""), best[0].get("count", 0)):
+            best[0].get("date", ""),
+            best[0].get("count", 0),
+        ):
             best = found
     try:
         return Coverage.from_json(*best) if best else None
@@ -262,12 +307,15 @@ def save(coverage, folder):
 
 # Reading the sources (network).
 
+
 def _get(url, timeout=120, gzip_ok=False):
     headers = {"User-Agent": _USER_AGENT}
     if gzip_ok:
         headers["Accept-Encoding"] = "gzip"
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
+    with urllib.request.urlopen(  # nosec B310
+        request, timeout=timeout
+    ) as response:
         data = response.read()
         if response.headers.get("Content-Encoding", "").lower() == "gzip":
             data = gzip.decompress(data)
@@ -275,7 +323,9 @@ def _get(url, timeout=120, gzip_ok=False):
 
 
 def ign_count():
-    data = _get(IGN_WFS + "&TYPENAMES={}&RESULTTYPE=hits".format(IGN_LAYER), timeout=60)
+    data = _get(
+        IGN_WFS + "&TYPENAMES={}&RESULTTYPE=hits".format(IGN_LAYER), timeout=60
+    )
     found = re.search(rb'numberMatched="(\d+)"', data)
     return int(found.group(1)) if found else None
 
@@ -298,9 +348,15 @@ def ign_tiles(after="", check=None, progress=None):
     cells = []
     newest = after
     start = 0
-    query = "&TYPENAMES={}&OUTPUTFORMAT=application/json&COUNT={}&PROPERTYNAME=coordonnees_nw,date_edition&SORTBY=coordonnees_nw".format(IGN_LAYER, IGN_PAGE)
+    query = ('&TYPENAMES={}&OUTPUTFORMAT=application/json&COUNT={}&'
+             'PROPERTYNAME=coordonnees_nw,date_edition&SORTBY=coord'
+             'onnees_nw').format(
+        IGN_LAYER, IGN_PAGE
+    )
     if after:
-        query += "&CQL_FILTER=" + urllib.request.quote("date_edition > '{}'".format(after))
+        query += "&CQL_FILTER=" + urllib.request.quote(
+            "date_edition > '{}'".format(after)
+        )
     while True:
         if check is not None:
             check()
@@ -325,8 +381,12 @@ def ign_tiles(after="", check=None, progress=None):
 
 def rlp_tiles():
     data = _get(remote_dem._RLP_DGM1, gzip_ok=True).decode("utf-8", "replace")
-    keys = {(int(e), int(n)) for e, n, _y in
-            re.findall(r"dgm1_32_(\d+)_(\d+)_1_rp_(\d{4})\.tif", data)}
+    keys = {
+        (int(e), int(n))
+        for e, n, _y in re.findall(
+            r"dgm1_32_(\d+)_(\d+)_1_rp_(\d{4})\.tif", data
+        )
+    }
     return [_rlp_cell(e, n) for e, n in keys]
 
 
@@ -338,7 +398,9 @@ BY_LIST = "https://geodaten.bayern.de/odd/a/dgm/dgm1/meta/metalink/09.meta4"
 def by_list_date():
     """(date of Bavaria's list, its size in bytes), by a HEAD request (a few
     hundred bytes); (None, None) when not known."""
-    request = urllib.request.Request(BY_LIST, method="HEAD", headers={"User-Agent": _USER_AGENT})
+    request = urllib.request.Request(
+        BY_LIST, method="HEAD", headers={"User-Agent": _USER_AGENT}
+    )
     with urllib.request.urlopen(request, timeout=60) as response:  # nosec B310
         modified = response.headers.get("Last-Modified")
         size = response.headers.get("Content-Length")
@@ -354,14 +416,22 @@ def by_tiles():
     """[(col, row)] of Bavaria's tiles and the list's date."""
     date, _size = by_list_date()
     text = _get(BY_LIST, timeout=300, gzip_ok=True).decode("utf-8", "replace")
-    keys = {(int(e), int(n)) for e, n in re.findall(r'<file name="(\d+)_(\d+)\.tif">', text)}
+    keys = {
+        (int(e), int(n))
+        for e, n in re.findall(r'<file name="(\d+)_(\d+)\.tif">', text)
+    }
     return [_rlp_cell(e, n) for e, n in keys], date
 
 
 def linz_tiles():
-    collection = json.loads(_get(remote_dem._NZ_BASE + "collection.json", timeout=60))
-    names = [link["href"][2:-5] for link in collection.get("links", [])
-             if link.get("rel") == "item" and link.get("href", "").startswith("./")]
+    collection = json.loads(
+        _get(remote_dem._NZ_BASE + "collection.json", timeout=60)
+    )
+    names = [
+        link["href"][2:-5]
+        for link in collection.get("links", [])
+        if link.get("rel") == "item" and link.get("href", "").startswith("./")
+    ]
     cells = []
     for name in names:
         try:
@@ -463,7 +533,9 @@ def update(key, user_dir=None, check=None):
         cells, date = by_tiles()
         if coverage is not None and date and date <= coverage.date:
             return False
-        coverage = Coverage.from_cells(key, cells, date or datetime.date.today().isoformat(), len(cells))
+        coverage = Coverage.from_cells(
+            key, cells, date or datetime.date.today().isoformat(), len(cells)
+        )
     else:
         cells = rlp_tiles() if key == "rlp_dgm1" else linz_tiles()
         return take_list(key, cells, user_dir)
@@ -473,6 +545,7 @@ def update(key, user_dir=None, check=None):
 
 # Taken from an analysis, which reads the same lists or fetches the tiles
 # (no more network). Never stops the analysis.
+
 
 def take_list(key, cells, user_dir=None):
     """The source's whole list, read by the analysis anyway (Rhineland-
@@ -484,8 +557,12 @@ def take_list(key, cells, user_dir=None):
         # Far fewer than before: more likely a list cut short than tiles
         # taken away; the grid is kept.
         return False
-    save(Coverage.from_cells(key, cells, datetime.date.today().isoformat(), len(cells)),
-         user_dir or _user_dir())
+    save(
+        Coverage.from_cells(
+            key, cells, datetime.date.today().isoformat(), len(cells)
+        ),
+        user_dir or _user_dir(),
+    )
     return True
 
 
@@ -498,9 +575,15 @@ def take_found(key, cells, user_dir=None):
     rows, cols = coverage.mask.shape
     own_c0 = int(round((coverage.x0 - _ORIGINS[key][0]) / coverage.cell_w))
     own_r0 = int(round((_ORIGINS[key][1] - coverage.y_top) / coverage.cell_h))
-    new = [(c, r) for c, r in cells
-           if not (0 <= r - own_r0 < rows and 0 <= c - own_c0 < cols
-                   and coverage.mask[r - own_r0, c - own_c0])]
+    new = [
+        (c, r)
+        for c, r in cells
+        if not (
+            0 <= r - own_r0 < rows
+            and 0 <= c - own_c0 < cols
+            and coverage.mask[r - own_r0, c - own_c0]
+        )
+    ]
     if not new:
         return False
     coverage.add_cells(new)

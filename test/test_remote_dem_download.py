@@ -41,15 +41,24 @@ class RemoteDemDownloadTest(unittest.TestCase):
             store = TileStore(os.path.join(root, "kept"), "folder")
             with patch.object(remote_dem, "_wait_for_retry") as waiting:
                 path = remote_dem._download_chunk(
-                    context, type("Connection", (), {"download": staticmethod(download)})(),
-                    "https://example.test/tile.tif", os.path.join(root, "tile.tif"),
-                    store, "ign", None, "1_2",
+                    context,
+                    type(
+                        "Connection", (), {"download": staticmethod(download)}
+                    )(),
+                    "https://example.test/tile.tif",
+                    os.path.join(root, "tile.tif"),
+                    store,
+                    "ign",
+                    None,
+                    "1_2",
                 )
             with open(path, "rb") as kept:
                 self.assertEqual(kept.read(), b"TIFF")
         self.assertEqual(len(calls), 2)
         waiting.assert_called_once_with(context, 1)
-        self.assertTrue(any("HTTP 502" in message for message in context.messages))
+        self.assertTrue(
+            any("HTTP 502" in message for message in context.messages)
+        )
 
     def test_missing_chunk_404_is_not_retried(self):
         context = _Context()
@@ -63,7 +72,9 @@ class RemoteDemDownloadTest(unittest.TestCase):
             with patch.object(remote_dem, "_wait_for_retry") as waiting:
                 with self.assertRaises(urllib.error.HTTPError):
                     remote_dem._download_with_retries(
-                        context, download, "https://example.test/missing.tif",
+                        context,
+                        download,
+                        "https://example.test/missing.tif",
                         os.path.join(root, "missing.tif"),
                     )
             self.assertEqual(len(calls), 1)
@@ -99,28 +110,53 @@ class RemoteDemDownloadTest(unittest.TestCase):
                 pass
 
         with tempfile.TemporaryDirectory() as root:
-            with patch.object(remote_dem.http.client, "HTTPSConnection", Connection), \
-                    patch.object(remote_dem.urllib.request, "getproxies", return_value={}):
+            with (
+                patch.object(
+                    remote_dem.http.client, "HTTPSConnection", Connection
+                ),
+                patch.object(
+                    remote_dem.urllib.request, "getproxies", return_value={}
+                ),
+            ):
                 pool = remote_dem._DownloadConnections()
                 try:
                     for code in ("a", "b"):
-                        pool.download(_Context(), "https://example.test/" + code,
-                                      os.path.join(root, code + ".tif"))
+                        pool.download(
+                            _Context(),
+                            "https://example.test/" + code,
+                            os.path.join(root, code + ".tif"),
+                        )
                 finally:
                     pool.close()
         self.assertEqual(len(created), 1)
-        self.assertEqual([request[1] for request in created[0].requests], ["/a", "/b"])
+        self.assertEqual(
+            [request[1] for request in created[0].requests], ["/a", "/b"]
+        )
 
     def test_ogc_overlaps_two_requests_and_preserves_mosaic_order(self):
         context = _Context()
-        spec = dict(label="test", prefix="test", cell=1, chunk_px=10,
-                    url="https://example.test/?x0={x0}&y0={y0}&x1={x1}&y1={y1}",
-                    layer="test", epsg=2154)
+        spec = dict(
+            label="test",
+            prefix="test",
+            cell=1,
+            chunk_px=10,
+            url="https://example.test/?x0={x0}&y0={y0}&x1={x1}&y1={y1}",
+            layer="test",
+            epsg=2154,
+        )
         two_started = threading.Barrier(2, timeout=5)
         calls = []
 
-        def download(_self, _ctx, url, dest, timeout=180, _retry=True,
-                     on_headers=None, on_bytes=None):
+        def download(
+            _self,
+            _ctx,
+            url,
+            dest,
+            timeout=180,
+            _retry=True,
+            on_headers=None,
+            on_bytes=None,
+        ):
             calls.append(url)
             if len(calls) <= 2:
                 two_started.wait()
@@ -133,19 +169,42 @@ class RemoteDemDownloadTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as root:
             store = TileStore(os.path.join(root, "kept"), "folder")
-            with patch.object(remote_dem._DownloadConnections, "download", download), \
-                    patch.object(remote_dem, "_finish_mosaic", side_effect=lambda _ctx, paths, *_a, **_k: paths):
-                paths = remote_dem._fetch_ogc(context, spec, (0, 0, 20, 20), root, store)
-                reused_paths = remote_dem._fetch_ogc(context, spec, (0, 0, 20, 20), root, store)
-            self.assertEqual([os.path.basename(path) for path in paths],
-                             ["0_0.tif", "1_0.tif", "0_1.tif", "1_1.tif"])
+            with (
+                patch.object(
+                    remote_dem._DownloadConnections, "download", download
+                ),
+                patch.object(
+                    remote_dem,
+                    "_finish_mosaic",
+                    side_effect=lambda _ctx, paths, *_a, **_k: paths,
+                ),
+            ):
+                paths = remote_dem._fetch_ogc(
+                    context, spec, (0, 0, 20, 20), root, store
+                )
+                reused_paths = remote_dem._fetch_ogc(
+                    context, spec, (0, 0, 20, 20), root, store
+                )
+            self.assertEqual(
+                [os.path.basename(path) for path in paths],
+                ["0_0.tif", "1_0.tif", "0_1.tif", "1_1.tif"],
+            )
             self.assertEqual(store.downloaded, 4)
             self.assertEqual(store.reused, 4)
             self.assertEqual(len(calls), 4)
             self.assertEqual(reused_paths, paths)
-            self.assertTrue(any("DEM transfer: 0.0 MB /" in message for message in context.messages))
-            self.assertTrue(any("4/4 downloaded, 0 reused, 0 active" in message
-                                for message in context.messages))
+            self.assertTrue(
+                any(
+                    "DEM transfer: 0.0 MB /" in message
+                    for message in context.messages
+                )
+            )
+            self.assertTrue(
+                any(
+                    "4/4 downloaded, 0 reused, 0 active" in message
+                    for message in context.messages
+                )
+            )
 
     def test_transfer_progress_estimates_then_confirms_total(self):
         context = _Context()
@@ -160,8 +219,14 @@ class RemoteDemDownloadTest(unittest.TestCase):
 
     def test_german_newest_404_falls_back_without_extra_years(self):
         context = _Context()
-        spec = dict(label="test", prefix="test", cell=1, state="rlp",
-                    epsg=25832, credit="credit {year}")
+        spec = dict(
+            label="test",
+            prefix="test",
+            cell=1,
+            state="rlp",
+            epsg=25832,
+            credit="credit {year}",
+        )
         calls = []
 
         def download(_self, _ctx, url, dest, timeout=180):
@@ -174,15 +239,34 @@ class RemoteDemDownloadTest(unittest.TestCase):
         years = {(100, 200): [2026, 2022], (101, 200): [2026, 2022]}
         with tempfile.TemporaryDirectory() as root:
             store = TileStore(os.path.join(root, "kept"), "folder")
-            with patch.object(remote_dem, "_rlp_years", return_value=years), \
-                    patch.object(remote_dem._DownloadConnections, "download", download), \
-                    patch.object(remote_dem, "_tile_coverage", return_value=1.0), \
-                    patch.object(remote_dem, "_normalised_tile", side_effect=lambda path, *_a: path), \
-                    patch.object(remote_dem, "_finish_mosaic", side_effect=lambda _ctx, paths, *_a, **_k: paths):
+            with (
+                patch.object(remote_dem, "_rlp_years", return_value=years),
+                patch.object(
+                    remote_dem._DownloadConnections, "download", download
+                ),
+                patch.object(remote_dem, "_tile_coverage", return_value=1.0),
+                patch.object(
+                    remote_dem,
+                    "_normalised_tile",
+                    side_effect=lambda path, *_a: path,
+                ),
+                patch.object(
+                    remote_dem,
+                    "_finish_mosaic",
+                    side_effect=lambda _ctx, paths, *_a, **_k: paths,
+                ),
+            ):
                 paths, info = remote_dem._fetch_de_tiles(
-                    context, spec, (100000, 200000, 102000, 201000), root, store)
-            self.assertEqual([os.path.basename(path) for path in paths],
-                             ["100_200.tif", "101_200.tif"])
+                    context,
+                    spec,
+                    (100000, 200000, 102000, 201000),
+                    root,
+                    store,
+                )
+            self.assertEqual(
+                [os.path.basename(path) for path in paths],
+                ["100_200.tif", "101_200.tif"],
+            )
             self.assertEqual(info["survey_years"], [2022, 2026])
             self.assertEqual(store.downloaded, 2)
             self.assertEqual(store.reused, 0)

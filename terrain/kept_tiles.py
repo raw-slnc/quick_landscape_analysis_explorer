@@ -45,8 +45,11 @@ def _tile_names(folder, ext):
     except OSError:
         return set()
     return {
-        name[: -len(ext)] for name in entries
-        if name.endswith(ext) and ".part-" not in name and not name.startswith(".")
+        name[: -len(ext)]
+        for name in entries
+        if name.endswith(ext)
+        and ".part-" not in name
+        and not name.startswith(".")
     }
 
 
@@ -61,11 +64,17 @@ def codes(root, key):
     folder, zoom = _FOLDERS[key]
     base = os.path.join(root, folder)
     if zoom is not None:
-        return {code: [None] for code in _tile_names(os.path.join(base, str(zoom)), ".png")}
+        return {
+            code: [None]
+            for code in _tile_names(os.path.join(base, str(zoom)), ".png")
+        }
     found = {}
     if key in _YEARS:
         try:
-            years = sorted((int(name) for name in os.listdir(base) if name.isdigit()), reverse=True)
+            years = sorted(
+                (int(name) for name in os.listdir(base) if name.isdigit()),
+                reverse=True,
+            )
         except OSError:
             years = []
         for year in years:
@@ -103,7 +112,7 @@ def _tile_bounds(key, code):
     if kind in ("gsi", "terrarium"):
         zoom = _FOLDERS[key][1]
         x, y = (int(part) for part in code.split("_"))
-        size = 2.0 * WEB_MERCATOR_LIMIT / (2 ** zoom)
+        size = 2.0 * WEB_MERCATOR_LIMIT / (2**zoom)
         left = -WEB_MERCATOR_LIMIT + x * size
         top = WEB_MERCATOR_LIMIT - y * size
         return left, top - size, left + size, top
@@ -118,7 +127,12 @@ def _tile_bounds(key, code):
         step = _CHUNK_M[key]
         return column * step, row * step, (column + 1) * step, (row + 1) * step
     east, north = (int(part) for part in code.split("_"))  # German 1 km tiles
-    return east * 1000.0, north * 1000.0, east * 1000.0 + 1000.0, north * 1000.0 + 1000.0
+    return (
+        east * 1000.0,
+        north * 1000.0,
+        east * 1000.0 + 1000.0,
+        north * 1000.0 + 1000.0,
+    )
 
 
 def footprint_epsg(key):
@@ -146,7 +160,13 @@ def footprint_wkt(root, key):
             except (ValueError, KeyError, IndexError):
                 continue  # a file not named like a tile
             ring = ogr.Geometry(ogr.wkbLinearRing)
-            for x, y in ((xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax), (xmin, ymin)):
+            for x, y in (
+                (xmin, ymin),
+                (xmax, ymin),
+                (xmax, ymax),
+                (xmin, ymax),
+                (xmin, ymin),
+            ):
                 ring.AddPoint_2D(x, y)
             box = ogr.Geometry(ogr.wkbPolygon)
             box.AddGeometry(ring)

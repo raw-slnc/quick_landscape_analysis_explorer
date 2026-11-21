@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#102417">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="manifest.json">
+  <title>PWA Probe</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%;
+      min-height: 100%;
+      background: linear-gradient(180deg, #102417 0%, #1d3a22 100%);
+      color: #e9f5e8;
+      font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    main {
+      width: min(100%, 420px);
+      background: rgba(7, 15, 10, 0.88);
+      border: 1px solid rgba(150, 220, 160, 0.22);
+      border-radius: 20px;
+      padding: 24px 20px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.28);
+    }
+    h1 {
+      font-size: 24px;
+      line-height: 1.2;
+      margin-bottom: 8px;
+      letter-spacing: 0.04em;
+    }
+    p {
+      color: #b9d0bb;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .panel {
+      margin-top: 18px;
+      display: grid;
+      gap: 10px;
+    }
+    .item {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(150, 220, 160, 0.12);
+    }
+    .label {
+      color: #93b094;
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .value {
+      color: #effbf0;
+      font-weight: 700;
+      font-size: 14px;
+      text-align: right;
+      word-break: break-word;
+    }
+    .note {
+      margin-top: 18px;
+      font-size: 12px;
+      color: #a7c4aa;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>PWA Probe</h1>
+    <p>fieldmap と同じホストで、最小構成の PWA インストール挙動を確認するための比較用ページです。</p>
+
+    <section class="panel">
+      <div class="item">
+        <span class="label">Mode</span>
+        <span class="value" id="displayMode">checking</span>
+      </div>
+      <div class="item">
+        <span class="label">Online</span>
+        <span class="value" id="onlineState">checking</span>
+      </div>
+      <div class="item">
+        <span class="label">Secure</span>
+        <span class="value" id="secureState">checking</span>
+      </div>
+      <div class="item">
+        <span class="label">Service Worker</span>
+        <span class="value" id="swState">registering</span>
+      </div>
+    </section>
+
+    <p class="note">このページがアプリとして入るなら、問題は fieldmap 固有の構成差に寄っています。これもショートカット止まりなら、Chrome/WebAPK 側の寄与が強そうです。</p>
+  </main>
+
+  <script>
+    function updateDisplayMode() {
+      const standalone = window.matchMedia('(display-mode: standalone)').matches ||
+        window.navigator.standalone === true;
+      document.getElementById('displayMode').textContent = standalone ? 'standalone' : 'browser';
+    }
+
+    function updateOnlineState() {
+      document.getElementById('onlineState').textContent = navigator.onLine ? 'online' : 'offline';
+    }
+
+    function updateSecureState() {
+      document.getElementById('secureState').textContent = window.isSecureContext ? 'secure' : 'insecure';
+    }
+
+    updateDisplayMode();
+    updateOnlineState();
+    updateSecureState();
+
+    window.addEventListener('online', updateOnlineState);
+    window.addEventListener('offline', updateOnlineState);
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').then(() => {
+        document.getElementById('swState').textContent = 'registered';
+      }).catch(err => {
+        document.getElementById('swState').textContent = 'failed';
+        console.error('Probe SW registration failed', err);
+      });
+    } else {
+      document.getElementById('swState').textContent = 'unsupported';
+    }
+  </script>
+</body>
+</html>

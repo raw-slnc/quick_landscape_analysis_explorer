@@ -8,7 +8,8 @@ names set up (off).
 For the developer. Needs QGIS's Python. Give the unpacked download's
 GeoPackage and SLD:
     python3 -m quick_landscape_analysis_explorer.tools.build_nl_styles \\
-        bro-geomorfologischekaart.gpkg BRO-GMM-GeomorfologischeKaart_V2025-01.sld
+        bro-geomorfologischekaart.gpkg \\
+        BRO-GMM-GeomorfologischeKaart_V2025-01.sld
 """
 
 import os
@@ -51,15 +52,22 @@ def main(gpkg, sld):
 
     app = QgsApplication([], False)
     app.initQgis()
-    layer = QgsVectorLayer(gpkg + "|layername=geomorphological_area", "gmm", "ogr")
+    layer = QgsVectorLayer(
+        gpkg + "|layername=geomorphological_area", "gmm", "ogr"
+    )
     message, ok = layer.loadSldStyle(sld)
     if not ok:
         raise SystemExit("The SLD could not be read: {}".format(message))
     layer.setBlendMode(QPainter.CompositionMode.CompositionMode_Multiply)
     layer.setOpacity(0.8)
     add_labels(layer)
-    target = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                          "terrain", "data", "styles", "nl_geomorphology.qml")
+    target = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "terrain",
+        "data",
+        "styles",
+        "nl_geomorphology.qml",
+    )
     os.makedirs(os.path.dirname(target), exist_ok=True)
     layer.saveNamedStyle(target)
     # No font name in the labels: QGIS writes the system's default font
@@ -69,8 +77,13 @@ def main(gpkg, sld):
         text = stream.read()
     with open(target, "w", encoding="utf-8") as stream:
         stream.write(re.sub(r'fontFamily="[^"]*"', 'fontFamily=""', text))
-    print("{}: {} rules, {} bytes".format(
-        target, len(layer.renderer().rootRule().children()), os.path.getsize(target)))
+    print(
+        "{}: {} rules, {} bytes".format(
+            target,
+            len(layer.renderer().rootRule().children()),
+            os.path.getsize(target),
+        )
+    )
     # The layer goes before QGIS shuts down (else Python crashes on exit).
     del layer
     app.exitQgis()

@@ -30,7 +30,9 @@ def write_morizon_slope_qml(path):
     return write_discrete_qml(path, items, opacity=0.65, minimum=0, maximum=90)
 
 
-def write_discrete_qml(path, items, opacity=1.0, minimum=None, maximum=None, multiply=False):
+def write_discrete_qml(
+    path, items, opacity=1.0, minimum=None, maximum=None, multiply=False
+):
     """A single-band raster style in classes: ``items`` are (upper value or
     "inf", label, "#rrggbb"), lowest first; a cell takes the colour of the
     first class whose upper value it does not pass. ``multiply``: drawn
@@ -41,7 +43,9 @@ def write_discrete_qml(path, items, opacity=1.0, minimum=None, maximum=None, mul
         # An XML attribute value in double quotes (as xml.sax.saxutils's).
         return '"{}"'.format(escape(str(text), quote=True))
 
-    numbers = [float(value) for value, _label, _color in items if value != "inf"]
+    numbers = [
+        float(value) for value, _label, _color in items if value != "inf"
+    ]
     minimum = numbers[0] if minimum is None else minimum
     maximum = numbers[-1] if maximum is None else maximum
     item_xml = "\n".join(
@@ -53,7 +57,9 @@ def write_discrete_qml(path, items, opacity=1.0, minimum=None, maximum=None, mul
     qml = """<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
 <qgis version="3.34" styleCategories="AllStyleCategories">
   <pipe>
-    <rasterrenderer alphaBand="-1" band="1" type="singlebandpseudocolor" opacity="{opacity}" classificationMin="{minimum}" classificationMax="{maximum}">
+    <rasterrenderer alphaBand="-1" band="1"
+      type="singlebandpseudocolor" opacity="{opacity}"
+      classificationMin="{minimum}" classificationMax="{maximum}">
       <rasterTransparency/>
       <minMaxOrigin>
         <!-- Limits "None" (user defined): with "MinMax", applying the layer's
@@ -63,20 +69,28 @@ def write_discrete_qml(path, items, opacity=1.0, minimum=None, maximum=None, mul
         <cumulativeCutLower>0.02</cumulativeCutLower><cumulativeCutUpper>0.98</cumulativeCutUpper><stdDevFactor>2</stdDevFactor>
       </minMaxOrigin>
       <rastershader>
-        <colorrampshader labelPrecision="4" colorRampType="DISCRETE" classificationMode="1" maximumValue="{maximum}" minimumValue="{minimum}" clip="0">
+        <colorrampshader labelPrecision="4" colorRampType="DISCRETE"
+          classificationMode="1" maximumValue="{maximum}"
+          minimumValue="{minimum}" clip="0">
 {items}
         </colorrampshader>
       </rastershader>
     </rasterrenderer>
     <brightnesscontrast contrast="0" gamma="1" brightness="0"/>
-    <huesaturation grayscaleMode="0" colorizeStrength="100" saturation="0" colorizeOn="0"/>
+    <huesaturation grayscaleMode="0" colorizeStrength="100"
+      saturation="0" colorizeOn="0"/>
     <rasterresampler maxOversampling="2"/>
     <resamplingStage>resamplingFilter</resamplingStage>
   </pipe>
   <blendMode>{blend}</blendMode>
 </qgis>
-""".format(items=item_xml, opacity=opacity, minimum=minimum, maximum=maximum,
-           blend=6 if multiply else 0)
+""".format(
+        items=item_xml,
+        opacity=opacity,
+        minimum=minimum,
+        maximum=maximum,
+        blend=6 if multiply else 0,
+    )
     Path(path).write_text(qml, encoding="utf-8")
     return str(path)
 
@@ -110,27 +124,33 @@ def write_catchment_qml(path):
     from qgis.PyQt.QtXml import QDomDocument
 
     def symbol(width, alpha, halo_width, halo_alpha):
-        halo = QgsSimpleLineSymbolLayer.create({
-            "line_color": "255,255,255,{}".format(halo_alpha),
-            "line_width": halo_width,
-            "line_width_unit": "MM",
-            "capstyle": "round",
-            "joinstyle": "round",
-        })
-        line = QgsSimpleLineSymbolLayer.create({
-            "line_color": "120,40,140,{}".format(alpha),
-            "line_width": width,
-            "line_width_unit": "MM",
-            "use_custom_dash": "1",
-            "customdash": "3;1",
-            "customdash_unit": "MM",
-            "capstyle": "flat",
-            "joinstyle": "round",
-        })
-        generator = QgsGeometryGeneratorSymbolLayer.create({
-            "geometryModifier": 'geom_from_wkt("edges_wkt")',
-            "SymbolType": "Line",
-        })
+        halo = QgsSimpleLineSymbolLayer.create(
+            {
+                "line_color": "255,255,255,{}".format(halo_alpha),
+                "line_width": halo_width,
+                "line_width_unit": "MM",
+                "capstyle": "round",
+                "joinstyle": "round",
+            }
+        )
+        line = QgsSimpleLineSymbolLayer.create(
+            {
+                "line_color": "120,40,140,{}".format(alpha),
+                "line_width": width,
+                "line_width_unit": "MM",
+                "use_custom_dash": "1",
+                "customdash": "3;1",
+                "customdash_unit": "MM",
+                "capstyle": "flat",
+                "joinstyle": "round",
+            }
+        )
+        generator = QgsGeometryGeneratorSymbolLayer.create(
+            {
+                "geometryModifier": 'geom_from_wkt("edges_wkt")',
+                "SymbolType": "Line",
+            }
+        )
         generator.setSymbolType(QgsSymbol.SymbolType.Line)
         generator.setSubSymbol(QgsLineSymbol([halo, line]))
         return QgsFillSymbol([generator])
@@ -141,12 +161,18 @@ def write_catchment_qml(path):
         ('"complete" = 1', "whole", "0.4", 255, "0.8", 255),
         ('"complete" = 0', "cut by the DEM edge", "0.25", 140, "0.6", 70),
     ):
-        root.appendChild(QgsRuleBasedRenderer.Rule(
-            symbol(width, alpha, halo_width, halo_alpha), filterExp=expression, label=label
-        ))
+        root.appendChild(
+            QgsRuleBasedRenderer.Rule(
+                symbol(width, alpha, halo_width, halo_alpha),
+                filterExp=expression,
+                label=label,
+            )
+        )
     layer = QgsVectorLayer(
-        "MultiPolygon?field=basin_id:integer&field=complete:integer&field=edges_wkt:string",
-        "c", "memory",
+        ('MultiPolygon?field=basin_id:integer&field=complete:integer&field'
+         '=edges_wkt:string'),
+        "c",
+        "memory",
     )
     layer.setRenderer(QgsRuleBasedRenderer(root))
     document = QDomDocument()
@@ -167,7 +193,9 @@ def write_contour_qml(path):
     from qgis.core import QgsLineSymbol, QgsRuleBasedRenderer, QgsVectorLayer
     from qgis.PyQt.QtXml import QDomDocument
 
-    layer = QgsVectorLayer("MultiLineString?field=elev:double&field=index:integer", "c", "memory")
+    layer = QgsVectorLayer(
+        "MultiLineString?field=elev:double&field=index:integer", "c", "memory"
+    )
     root = QgsRuleBasedRenderer.Rule(None)
     # (filter, width mm, label, smallest scale denominator shown)
     for expression, width, label, max_denominator in (
@@ -175,14 +203,18 @@ def write_contour_qml(path):
         ('"elev" % 20 = 0 AND "elev" % 100 <> 0', "0.1", "20m", 40001),
         ('"elev" % 100 = 0', "0.23", "100m", 50001),
     ):
-        symbol = QgsLineSymbol.createSimple({
-            "line_color": "58,28,0,255",
-            "line_width": width,
-            "line_width_unit": "MM",
-            "capstyle": "square",
-            "joinstyle": "bevel",
-        })
-        rule = QgsRuleBasedRenderer.Rule(symbol, filterExp=expression, label=label)
+        symbol = QgsLineSymbol.createSimple(
+            {
+                "line_color": "58,28,0,255",
+                "line_width": width,
+                "line_width_unit": "MM",
+                "capstyle": "square",
+                "joinstyle": "bevel",
+            }
+        )
+        rule = QgsRuleBasedRenderer.Rule(
+            symbol, filterExp=expression, label=label
+        )
         # QGIS: "maximum scale" is the most zoomed-in, "minimum" the most
         # zoomed-out scale at which the rule is drawn.
         rule.setMinimumScale(max_denominator)

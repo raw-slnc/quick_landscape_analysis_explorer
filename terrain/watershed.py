@@ -69,7 +69,8 @@ class WatershedError(Exception):
 
 
 def grass_watershed_algorithm_id():
-    """The registered r.watershed id (provider name differs by QGIS), or None."""
+    ('The registered r.watershed id (provider name differs by QGIS), or '
+     'None.')
     from qgis.core import QgsApplication
 
     registry = QgsApplication.processingRegistry()
@@ -80,7 +81,7 @@ def grass_watershed_algorithm_id():
 
 
 def catchment_engine():
-    """"grass" or "numpy": what makes the catchments in this QGIS."""
+    """ "grass" or "numpy": what makes the catchments in this QGIS."""
     if CATCHMENT_ENGINE == "numpy":
         return "numpy"
     return "grass" if grass_watershed_algorithm_id() is not None else "numpy"
@@ -99,8 +100,12 @@ def _ascii_safe_work_dir():
     """
     base = tempfile.gettempdir()
     drive = os.path.splitdrive(base)[0]
-    root = os.path.join(drive + os.sep, "qlae_tmp") if drive else os.path.join(base, "qlae_tmp")
-    if re.search("[^\x01-\x7E]", root):
+    root = (
+        os.path.join(drive + os.sep, "qlae_tmp")
+        if drive
+        else os.path.join(base, "qlae_tmp")
+    )
+    if re.search("[^\x01-\x7e]", root):
         root = os.path.join(drive + os.sep if drive else os.sep, "qlae_tmp")
     os.makedirs(root, exist_ok=True)
     return tempfile.mkdtemp(prefix="ws_", dir=root)
@@ -109,17 +114,26 @@ def _ascii_safe_work_dir():
 def _write_dem(path, data, gt, crs_wkt):
     rows, cols = data.shape
     dataset = gdal.GetDriverByName("GTiff").Create(
-        path, cols, rows, 1, gdal.GDT_Float32, options=["COMPRESS=LZW", "TILED=YES"]
+        path,
+        cols,
+        rows,
+        1,
+        gdal.GDT_Float32,
+        options=["COMPRESS=LZW", "TILED=YES"],
     )
     dataset.SetGeoTransform(gt)
     dataset.SetProjection(crs_wkt)
     band = dataset.GetRasterBand(1)
     band.SetNoDataValue(-9999.0)
-    band.WriteArray(np.where(np.isfinite(data), data, -9999.0).astype("float32"))
+    band.WriteArray(
+        np.where(np.isfinite(data), data, -9999.0).astype("float32")
+    )
     dataset = None
 
 
-def compute_catchments(data, gt, crs_wkt, frame_envelope, context, feedback, cell_size):
+def compute_catchments(
+    data, gt, crs_wkt, frame_envelope, context, feedback, cell_size
+):
     """Catchment polygons for the frame, computed on the whole (wide) DEM.
 
     data, gt, crs_wkt : the prepared DEM covering the wide acquisition area
@@ -150,11 +164,18 @@ def compute_catchments(data, gt, crs_wkt, frame_envelope, context, feedback, cel
         # Resample to the fixed catchment grid (averaging finer DEMs).
         target = max(CELL_SIZE_M, float(cell_size))
         resampled = os.path.join(work_dir, "dem_ws.tif")
-        context.report("Catchments: preparing the {:.0f} m grid...".format(target))
+        context.report(
+            "Catchments: preparing the {:.0f} m grid...".format(target)
+        )
         warped = gdal.Warp(
-            resampled, dem_path, xRes=target, yRes=target,
+            resampled,
+            dem_path,
+            xRes=target,
+            yRes=target,
             resampleAlg="average" if target > cell_size else "bilinear",
-            srcNodata=-9999.0, dstNodata=-9999.0, format="GTiff",
+            srcNodata=-9999.0,
+            dstNodata=-9999.0,
+            format="GTiff",
         )
         if warped is None:
             raise WatershedError("Could not prepare the DEM for catchments.")
@@ -163,7 +184,9 @@ def compute_catchments(data, gt, crs_wkt, frame_envelope, context, feedback, cel
         filled = fill_enclosed_holes(resampled)
         context.check()
 
-        threshold = max(1, int(round(MIN_AREA_HA * 10000.0 / (target * target))))
+        threshold = max(
+            1, int(round(MIN_AREA_HA * 10000.0 / (target * target)))
+        )
         grid = gdal.Open(resampled)
         cells = grid.RasterXSize * grid.RasterYSize
         grid = None
@@ -172,14 +195,27 @@ def compute_catchments(data, gt, crs_wkt, frame_envelope, context, feedback, cel
         if engine == "grass":
             flow_started = time.perf_counter()
             try:
-                _grass_basins(resampled, basin_path, threshold, work_dir, context, feedback)
+                _grass_basins(
+                    resampled,
+                    basin_path,
+                    threshold,
+                    work_dir,
+                    context,
+                    feedback,
+                )
                 if not os.path.exists(basin_path):
-                    raise WatershedError("GRASS r.watershed did not produce catchments.")
-            except Exception as error:  # noqa: BLE001 - any failure: numpy instead
+                    raise WatershedError(
+                        "GRASS r.watershed did not produce catchments."
+                    )
+            # any failure: numpy instead
+            except Exception as error:  # noqa: BLE001
                 context.check()  # but a cancelled job stays cancelled
                 grass_error = str(error) or type(error).__name__
                 _log_grass_failure(grass_error)
-                context.report("Catchments: GRASS could not run; computing in the plugin...")
+                context.report(
+                    ('Catchments: GRASS could not run; computing in the '
+                     'plugin...')
+                )
                 if os.path.exists(basin_path):
                     os.remove(basin_path)
                 engine = "numpy"
@@ -193,14 +229,18 @@ def compute_catchments(data, gt, crs_wkt, frame_envelope, context, feedback, cel
 
         context.report("Catchments: joining the small ones...")
         joined_path = os.path.join(work_dir, "basin_joined.tif")
-        joined = _join_small_basins(basin_path, resampled, threshold, joined_path)
+        joined = _join_small_basins(
+            basin_path, resampled, threshold, joined_path
+        )
         if joined is not None:
             basin_path = joined_path
         _absorb_fragments(basin_path)
         context.check()
 
         context.report("Catchments: making polygons...")
-        catchments = _basin_polygons(basin_path, crs_wkt, frame_envelope, context)
+        catchments = _basin_polygons(
+            basin_path, crs_wkt, frame_envelope, context
+        )
         details = {
             "timing": {
                 "total_s": round(time.perf_counter() - started, 2),
@@ -225,7 +265,8 @@ def _log_grass_failure(message):
         from qgis.core import Qgis, QgsMessageLog
 
         QgsMessageLog.logMessage(
-            "GRASS r.watershed could not run; catchments computed in the plugin "
+            'GRASS r.watershed could not run; catchments computed in the '
+            'plugin '
             "(numpy) instead:\n" + message,
             "Quick Landscape Analysis Explorer",
             Qgis.MessageLevel.Warning,
@@ -234,7 +275,9 @@ def _log_grass_failure(message):
         return
 
 
-def _grass_basins(dem_path, basin_path, threshold, work_dir, context, feedback):
+def _grass_basins(
+    dem_path, basin_path, threshold, work_dir, context, feedback
+):
     """Catchment raster from GRASS r.watershed."""
     import processing
     from processing.tools import dataobjects
@@ -252,17 +295,40 @@ def _grass_basins(dem_path, basin_path, threshold, work_dir, context, feedback):
     processing_context.setTemporaryFolder(work_dir.replace("\\", "/"))
     QgsProcessingUtils.tempFolder(processing_context)
     context.report("Catchments: computing flow (GRASS r.watershed, MFD)...")
-    processing.run(algorithm_id, {
-        "elevation": dem_path,
-        "-4": False, "-a": False, "-b": False, "-m": False, "-s": False,
-        "GRASS_RASTER_FORMAT_META": "", "GRASS_RASTER_FORMAT_OPT": "",
-        "GRASS_REGION_CELLSIZE_PARAMETER": 0, "GRASS_REGION_PARAMETER": None,
-        "accumulation": None, "basin": basin_path, "blocking": None,
-        "convergence": CONVERGENCE, "depression": None, "disturbed_land": None,
-        "drainage": None, "flow": None, "half_basin": None, "length_slope": None,
-        "max_slope_length": None, "memory": MEMORY_MB, "slope_steepness": None,
-        "spi": None, "stream": None, "tci": None, "threshold": threshold,
-    }, feedback=feedback, context=processing_context)
+    processing.run(
+        algorithm_id,
+        {
+            "elevation": dem_path,
+            "-4": False,
+            "-a": False,
+            "-b": False,
+            "-m": False,
+            "-s": False,
+            "GRASS_RASTER_FORMAT_META": "",
+            "GRASS_RASTER_FORMAT_OPT": "",
+            "GRASS_REGION_CELLSIZE_PARAMETER": 0,
+            "GRASS_REGION_PARAMETER": None,
+            "accumulation": None,
+            "basin": basin_path,
+            "blocking": None,
+            "convergence": CONVERGENCE,
+            "depression": None,
+            "disturbed_land": None,
+            "drainage": None,
+            "flow": None,
+            "half_basin": None,
+            "length_slope": None,
+            "max_slope_length": None,
+            "memory": MEMORY_MB,
+            "slope_steepness": None,
+            "spi": None,
+            "stream": None,
+            "tci": None,
+            "threshold": threshold,
+        },
+        feedback=feedback,
+        context=processing_context,
+    )
     processing_context = None
     gc.collect()
 
@@ -281,7 +347,12 @@ def _numpy_basins(dem_path, basin_path, threshold, context):
     labels = catchment_grid.basin_labels(data, threshold, CONVERGENCE, context)
     rows, cols = labels.shape
     out = gdal.GetDriverByName("GTiff").Create(
-        basin_path, cols, rows, 1, gdal.GDT_Int32, options=["COMPRESS=LZW", "TILED=YES"]
+        basin_path,
+        cols,
+        rows,
+        1,
+        gdal.GDT_Int32,
+        options=["COMPRESS=LZW", "TILED=YES"],
     )
     out.SetGeoTransform(gt)
     out.SetProjection(projection)
@@ -345,7 +416,9 @@ def fill_enclosed_holes(dem_path, near_holes=False):
     enclosed_raster.SetGeoTransform((0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
     gdal.RasterizeLayer(enclosed_raster, [1], inside_layer, burn_values=[1])
     enclosed = (enclosed_raster.GetRasterBand(1).ReadAsArray() == 1) & missing
-    layer = inside_layer = vectors = inside = holes_band = holes = enclosed_raster = None
+    layer = inside_layer = vectors = inside = holes_band = holes = (
+        enclosed_raster
+    ) = None
 
     # Interpolate every hole on a copy; keep the values only in the
     # enclosed ones.
@@ -384,11 +457,21 @@ def _absorb_fragments(basin_path):
 
 
 # The 8 neighbours of a cell (row, column offsets).
-_NEIGHBOURS = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
+_NEIGHBOURS = (
+    (-1, -1),
+    (-1, 0),
+    (-1, 1),
+    (0, -1),
+    (0, 1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
+)
 
 
 def _join_small_basins(basin_path, dem_path, threshold, out_path):
-    """Join catchments under ``threshold`` cells to the catchment they drain into.
+    """Join catchments under ``threshold`` cells to the
+    catchment they drain into.
 
     The catchment drained into is the one with the lowest cell next to the
     small one (where its water leaves it). Joined catchments that are still
@@ -437,9 +520,15 @@ def _join_small_basins(basin_path, dem_path, threshold, out_path):
     # next to a.
     keys, heights = [], []
     for dr, dc in _NEIGHBOURS:
-        a = labels[max(0, -dr):rows - max(0, dr), max(0, -dc):cols - max(0, dc)]
-        b = labels[max(0, dr):rows - max(0, -dr), max(0, dc):cols - max(0, -dc)]
-        zb = z[max(0, dr):rows - max(0, -dr), max(0, dc):cols - max(0, -dc)]
+        a = labels[
+            max(0, -dr): rows - max(0, dr), max(0, -dc): cols - max(0, dc)
+        ]
+        b = labels[
+            max(0, dr): rows - max(0, -dr), max(0, dc): cols - max(0, -dc)
+        ]
+        zb = z[
+            max(0, dr): rows - max(0, -dr), max(0, dc): cols - max(0, -dc)
+        ]
         edge[a[(a > 0) & (b == 0)]] = True
         touching = (a > 0) & (b > 0) & (a != b)
         keys.append(a[touching] * (top + 1) + b[touching])
@@ -456,8 +545,16 @@ def _join_small_basins(basin_path, dem_path, threshold, out_path):
         neighbours.setdefault(a, {})[b] = height
     edge[0] = True  # 0 is "no catchment", never joined
 
-    sizes = {int(value): int(count[value]) for value in np.nonzero(count)[0] if value > 0}
-    queue = [(size, value) for value, size in sizes.items() if size < threshold and not edge[value]]
+    sizes = {
+        int(value): int(count[value])
+        for value in np.nonzero(count)[0]
+        if value > 0
+    }
+    queue = [
+        (size, value)
+        for value, size in sizes.items()
+        if size < threshold and not edge[value]
+    ]
     heapq.heapify(queue)
     into = {}
     joined = 0
@@ -496,7 +593,12 @@ def _join_small_basins(basin_path, dem_path, threshold, out_path):
             root = into[root]
         lookup[value] = root
     out = gdal.GetDriverByName("GTiff").Create(
-        out_path, cols, rows, 1, gdal.GDT_Int32, options=["COMPRESS=LZW", "TILED=YES"]
+        out_path,
+        cols,
+        rows,
+        1,
+        gdal.GDT_Int32,
+        options=["COMPRESS=LZW", "TILED=YES"],
     )
     out.SetGeoTransform(gt)
     out.SetProjection(projection)
@@ -539,7 +641,9 @@ def _basin_polygons(basin_path, crs_wkt, frame_envelope, context):
     xmax = xmin + cols * basin_gt[1]
     ymin = ymax + rows * basin_gt[5]
     tolerance = abs(basin_gt[1]) * 0.5
-    inner = _rectangle(xmin + tolerance, xmax - tolerance, ymin + tolerance, ymax - tolerance)
+    inner = _rectangle(
+        xmin + tolerance, xmax - tolerance, ymin + tolerance, ymax - tolerance
+    )
     frame = _rectangle(*frame_envelope)
 
     wholes = {}
@@ -551,12 +655,16 @@ def _basin_polygons(basin_path, crs_wkt, frame_envelope, context):
         if whole is None or whole.IsEmpty() or not whole.Intersects(frame):
             continue
         wholes[value] = whole
-    complete = {value: bool(inner.Contains(whole)) for value, whole in wholes.items()}
+    complete = {
+        value: bool(inner.Contains(whole)) for value, whole in wholes.items()
+    }
     context.check()
 
     context.report("Catchments: rounding the boundaries...")
     cell = abs(basin_gt[1])
-    shapes = _boundaries(wholes, complete, ROUND_ITERATIONS, cell, frame, context)
+    shapes = _boundaries(
+        wholes, complete, ROUND_ITERATIONS, cell, frame, context
+    )
     rounded = shapes is not None
     if not rounded:
         shapes = _boundaries(wholes, complete, 0, cell, frame, context)
@@ -574,18 +682,22 @@ def _basin_polygons(basin_path, crs_wkt, frame_envelope, context):
                 continue
             for line in _lines(piece):
                 shown.AddGeometry(line)
-        catchments.append({
-            "id": int(value),
-            "wkt": clipped.ExportToWkt(),
-            # The boundary lines this catchment draws (each line once).
-            "edges_wkt": shown.ExportToWkt() if shown.GetGeometryCount() else None,
-            # Area and completeness come from the grid, before rounding.
-            "area_ha": round(whole.GetArea() / 10000.0, 3),
-            # Reaching the edge of the wide DEM means the catchment goes on
-            # beyond what was fetched.
-            "complete": complete[value],
-            "rounded": rounded,
-        })
+        catchments.append(
+            {
+                "id": int(value),
+                "wkt": clipped.ExportToWkt(),
+                # The boundary lines this catchment draws (each line once).
+                "edges_wkt": shown.ExportToWkt()
+                if shown.GetGeometryCount()
+                else None,
+                # Area and completeness come from the grid, before rounding.
+                "area_ha": round(whole.GetArea() / 10000.0, 3),
+                # Reaching the edge of the wide DEM means the catchment goes on
+                # beyond what was fetched.
+                "complete": complete[value],
+                "rounded": rounded,
+            }
+        )
     return catchments
 
 
@@ -630,7 +742,10 @@ def _boundaries(wholes, complete, iterations, cell, frame, context):
             value: QgsGeometry.fromWkt(whole.ExportToWkt())
             for value, whole in wholes.items()
         }
-        boundaries = [QgsGeometry(shape.constGet().boundary()) for shape in shapes.values()]
+        boundaries = [
+            QgsGeometry(shape.constGet().boundary())
+            for shape in shapes.values()
+        ]
         # Shared edges once, split where catchments meet, joined in between.
         network = QgsGeometry.unaryUnion(boundaries).mergeLines()
         context.check()
@@ -681,7 +796,8 @@ def _boundaries(wholes, complete, iterations, cell, frame, context):
             middle = line.interpolate(line.length() / 2.0)
             box = line.boundingBox()
             sides = [
-                value for value, joined in rebuilt.items()
+                value
+                for value, joined in rebuilt.items()
                 if box.intersects(joined.boundingBox())
                 and joined.distance(middle) < 1e-6
             ]
@@ -709,7 +825,11 @@ def _averaged_line(line, cell, reach):
     from qgis.core import QgsGeometry, QgsPointXY
 
     dense = line.densifyByDistance(cell)
-    parts = dense.asMultiPolyline() if dense.isMultipart() else [dense.asPolyline()]
+    parts = (
+        dense.asMultiPolyline()
+        if dense.isMultipart()
+        else [dense.asPolyline()]
+    )
     out = []
     for points in parts:
         last = len(points) - 1
@@ -719,11 +839,13 @@ def _averaged_line(line, cell, reach):
         smoothed = [points[0]]
         for index in range(1, last):
             near = min(reach, index, last - index)
-            window = points[index - near:index + near + 1]
-            smoothed.append(QgsPointXY(
-                sum(p.x() for p in window) / len(window),
-                sum(p.y() for p in window) / len(window),
-            ))
+            window = points[index - near: index + near + 1]
+            smoothed.append(
+                QgsPointXY(
+                    sum(p.x() for p in window) / len(window),
+                    sum(p.y() for p in window) / len(window),
+                )
+            )
         smoothed.append(points[-1])
         out.append(smoothed)
     if len(out) == 1:
@@ -733,7 +855,13 @@ def _averaged_line(line, cell, reach):
 
 def _rectangle(xmin, xmax, ymin, ymax):
     ring = ogr.Geometry(ogr.wkbLinearRing)
-    for x, y in ((xmin, ymax), (xmax, ymax), (xmax, ymin), (xmin, ymin), (xmin, ymax)):
+    for x, y in (
+        (xmin, ymax),
+        (xmax, ymax),
+        (xmax, ymin),
+        (xmin, ymin),
+        (xmin, ymax),
+    ):
         ring.AddPoint_2D(x, y)
     polygon = ogr.Geometry(ogr.wkbPolygon)
     polygon.AddGeometry(ring)
@@ -746,9 +874,15 @@ def write_catchments_gpkg(path, catchments, crs_wkt):
     if os.path.exists(path):
         os.remove(path)
     datasource = ogr.GetDriverByName("GPKG").CreateDataSource(path)
-    layer = datasource.CreateLayer("catchments", reference, ogr.wkbMultiPolygon)
-    for name, kind in (("basin_id", ogr.OFTInteger), ("area_ha", ogr.OFTReal),
-                       ("complete", ogr.OFTInteger), ("edges_wkt", ogr.OFTString)):
+    layer = datasource.CreateLayer(
+        "catchments", reference, ogr.wkbMultiPolygon
+    )
+    for name, kind in (
+        ("basin_id", ogr.OFTInteger),
+        ("area_ha", ogr.OFTReal),
+        ("complete", ogr.OFTInteger),
+        ("edges_wkt", ogr.OFTString),
+    ):
         layer.CreateField(ogr.FieldDefn(name, kind))
     for item in catchments:
         feature = ogr.Feature(layer.GetLayerDefn())
@@ -757,7 +891,9 @@ def write_catchments_gpkg(path, catchments, crs_wkt):
         feature.SetField("complete", 1 if item["complete"] else 0)
         if item.get("edges_wkt"):
             feature.SetField("edges_wkt", item["edges_wkt"])
-        geometry = ogr.ForceToMultiPolygon(ogr.CreateGeometryFromWkt(item["wkt"]))
+        geometry = ogr.ForceToMultiPolygon(
+            ogr.CreateGeometryFromWkt(item["wkt"])
+        )
         feature.SetGeometry(geometry)
         layer.CreateFeature(feature)
         feature = None

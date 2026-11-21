@@ -31,7 +31,8 @@ def plugin_font():
 # plugin window opens, and tooltips (QGIS's tooltip font is application-wide
 # and stays as it is; a tooltip is a child of its widget). A widget's own
 # style sheet still wins (the developer credit's 8 pt).
-WINDOW_RULES = "QWidget {{ font-size: {0:g}pt; }} QToolTip {{ font-size: {0:g}pt; }}".format(
+WINDOW_RULES = ('QWidget {{ font-size: {0:g}pt; }} QToolTip {{ '
+                'font-size: {0:g}pt; }}').format(
     PLUGIN_PT
 )
 
@@ -42,7 +43,9 @@ def use_plugin_font(window):
 
     window.setFont(plugin_font())
     if WINDOW_RULES not in window.styleSheet():
-        window.setStyleSheet((window.styleSheet() + " " + WINDOW_RULES).strip())
+        window.setStyleSheet(
+            (window.styleSheet() + " " + WINDOW_RULES).strip()
+        )
     return window
 
 

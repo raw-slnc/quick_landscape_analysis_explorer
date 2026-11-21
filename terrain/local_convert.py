@@ -109,7 +109,8 @@ class LocalGrid:
 
 
 def open_raster(path):
-    """A raster without a position as a LocalGrid (file or pixel coordinates)."""
+    ('A raster without a position as a LocalGrid (file or pixel '
+     'coordinates).')
 
     try:
         dataset = gdal.Open(path)
@@ -136,18 +137,24 @@ def open_raster(path):
     data[~np.isfinite(data) | (np.abs(data) >= 1e30)] = np.nan
     scale = band.GetScale()
     offset = band.GetOffset()
-    data = data * (1.0 if scale is None else scale) + (0.0 if offset is None else offset)
+    data = data * (1.0 if scale is None else scale) + (
+        0.0 if offset is None else offset
+    )
     gt = dataset.GetGeoTransform(can_return_null=True)
     has_gt = gt is not None
     if gt is None:
         # Pixel coordinates, y up: column to the right, rows downwards.
         gt = (0.0, 1.0, 0.0, 0.0, 0.0, -1.0)
     dataset = None
-    return LocalGrid(data, gt, {
-        "kind": "raster",
-        "file_name": os.path.basename(path),
-        "coordinates": "file" if has_gt else "pixels",
-    })
+    return LocalGrid(
+        data,
+        gt,
+        {
+            "kind": "raster",
+            "file_name": os.path.basename(path),
+            "coordinates": "file" if has_gt else "pixels",
+        },
+    )
 
 
 # --------------------------------------------------------------------------
@@ -177,7 +184,11 @@ class CadDrawing:
 
         names = set(self.parts) | set(self.flat_parts)
         found = [
-            (name, len(self.parts.get(name, ())), len(self.flat_parts.get(name, ())))
+            (
+                name,
+                len(self.parts.get(name, ())),
+                len(self.flat_parts.get(name, ())),
+            )
             for name in names
         ]
         found.sort(key=lambda item: (item[1] == 0, item[0].lower()))
@@ -191,8 +202,12 @@ class CadDrawing:
                 source = None
         if source is None:
             raise LocalSourceError("cannot_open_cad")
-        layers = [source.GetLayer(index) for index in range(source.GetLayerCount())]
-        total = max(1, sum(max(0, layer.GetFeatureCount()) for layer in layers))
+        layers = [
+            source.GetLayer(index) for index in range(source.GetLayerCount())
+        ]
+        total = max(
+            1, sum(max(0, layer.GetFeatureCount()) for layer in layers)
+        )
         done = 0
         for layer in layers:
             definition = layer.GetLayerDefn()
@@ -209,10 +224,20 @@ class CadDrawing:
                 if geometry is None:
                     continue
                 name = (
-                    feature.GetField(layer_field) if layer_field >= 0 else None
-                ) or layer.GetName() or "0"
+                    (
+                        feature.GetField(layer_field)
+                        if layer_field >= 0
+                        else None
+                    )
+                    or layer.GetName()
+                    or "0"
+                )
                 for part in _geometry_parts(geometry):
-                    target = self.parts if np.any(part[:, 2] != 0.0) else self.flat_parts
+                    target = (
+                        self.parts
+                        if np.any(part[:, 2] != 0.0)
+                        else self.flat_parts
+                    )
                     target.setdefault(str(name), []).append(part)
         source = None
         if not self.parts and not self.flat_parts:
@@ -250,7 +275,9 @@ def _vertices(geometry):
     return points
 
 
-def grid_cad(drawing, layers=None, check=None, unit="m", swap=False, progress=None):
+def grid_cad(
+    drawing, layers=None, check=None, unit="m", swap=False, progress=None
+):
     """Interpolate the chosen CAD layers' heights onto a local grid.
 
     Lines are densified to the cell size first, so contour lines give the
@@ -265,7 +292,9 @@ def grid_cad(drawing, layers=None, check=None, unit="m", swap=False, progress=No
     # chosen in (where two layers share a spot, the first one's height stays).
     chosen = sorted(layers if layers is not None else drawing.parts)
     parts = [
-        _read_as(part, unit, swap) for name in chosen for part in drawing.parts.get(name, ())
+        _read_as(part, unit, swap)
+        for name in chosen
+        for part in drawing.parts.get(name, ())
     ]
     if not parts:
         raise LocalSourceError("cad_no_heights")
@@ -303,18 +332,24 @@ def grid_cad(drawing, layers=None, check=None, unit="m", swap=False, progress=No
     data = _linear_grid(points, x0, y1, cell, cols, rows, progress, check)
     if check is not None:
         check()
-    return LocalGrid(data, (x0, cell, 0.0, y1, 0.0, -cell), {
-        "kind": "cad",
-        "file_name": os.path.basename(drawing.path),
-        "cad_layers": sorted(chosen),
-        "points": int(len(points)),
-        "unit": unit,
-        "swapped_xy": bool(swap),
-        "feature_spacing": spacing,
-        "method": "GDAL grid, linear interpolation in Delaunay triangles "
-        "(lines densified to the cell size); cell = half the median distance "
-        "between neighbouring lines and points, rounded down to 1, 2, 5 x 10^n",
-    })
+    return LocalGrid(
+        data,
+        (x0, cell, 0.0, y1, 0.0, -cell),
+        {
+            "kind": "cad",
+            "file_name": os.path.basename(drawing.path),
+            "cad_layers": sorted(chosen),
+            "points": int(len(points)),
+            "unit": unit,
+            "swapped_xy": bool(swap),
+            "feature_spacing": spacing,
+            "method": "GDAL grid, linear interpolation in Delaunay triangles "
+            '(lines densified to the cell size); cell = half the median '
+            'distance '
+            'between neighbouring lines and points, rounded down to 1, '
+            '2, 5 x 10^n',
+        },
+    )
 
 
 def _read_as(part, unit, swap):
@@ -328,14 +363,20 @@ def _read_as(part, unit, swap):
 
 
 def read_grid_as(grid, unit="m", swap=False):
-    """A raster's LocalGrid read in another unit and/or with X and Y swapped."""
+    ("A raster's LocalGrid read in another unit and/or with X and Y "
+     'swapped.')
 
     factor = UNITS_M[unit]
     gt = tuple(value * factor for value in grid.gt)
     if swap:
-        # x = gt0 + col*gt1 + row*gt2 and y = gt3 + col*gt4 + row*gt5 change places.
+        # x = gt0 + col*gt1 + row*gt2 and y = gt3 + col*gt4 + row*gt5 change
+        # places.
         gt = (gt[3], gt[4], gt[5], gt[0], gt[1], gt[2])
-    return LocalGrid(grid.data * factor, gt, dict(grid.info, unit=unit, swapped_xy=bool(swap)))
+    return LocalGrid(
+        grid.data * factor,
+        gt,
+        dict(grid.info, unit=unit, swapped_xy=bool(swap)),
+    )
 
 
 def _feature_spacing(parts, check=None):
@@ -347,7 +388,9 @@ def _feature_spacing(parts, check=None):
     holding about CAD_SPACING_SAMPLE vertices.
     """
 
-    ids = np.concatenate([np.full(len(part), index) for index, part in enumerate(parts)])
+    ids = np.concatenate(
+        [np.full(len(part), index) for index, part in enumerate(parts)]
+    )
     xy = np.concatenate(parts)[:, :2]
     if len(xy) > CAD_SPACING_SAMPLE:
         xmin, ymin = xy.min(axis=0)
@@ -365,7 +408,10 @@ def _feature_spacing(parts, check=None):
     xy, ids = xy[first], ids[first]
     if len(xy) < 3:
         return None
-    owner = {(round(x, 6), round(y, 6)): part for (x, y), part in zip(xy.tolist(), ids.tolist())}
+    owner = {
+        (round(x, 6), round(y, 6)): part
+        for (x, y), part in zip(xy.tolist(), ids.tolist())
+    }
     points = ogr.Geometry(ogr.wkbMultiPoint)
     for x, y in xy.tolist():
         point = ogr.Geometry(ogr.wkbPoint)
@@ -430,7 +476,11 @@ def _linear_grid(points, x0, y1, cell, cols, rows, progress=None, check=None):
     )
     try:
         np.savetxt(
-            csv_path, scaled, delimiter=",", header="x,y,z", comments="",
+            csv_path,
+            scaled,
+            delimiter=",",
+            header="x,y,z",
+            comments="",
             fmt=("%.6f", "%.6f", "%.9g"),
         )
         with _quiet_gdal():
@@ -516,7 +566,8 @@ def _nice_step(value):
 
 
 class _quiet_gdal:
-    """Use GDAL exceptions inside the block and leave the global mode as it was."""
+    ('Use GDAL exceptions inside the block and leave the global mode as '
+     'it was.')
 
     def __enter__(self):
         self._previous = gdal.GetUseExceptions()
@@ -558,21 +609,33 @@ def write_converted(grid, crs_wkt, path, record):
         dataset.SetProjection(crs_wkt)
         band = dataset.GetRasterBand(1)
         band.SetNoDataValue(nodata)
-        band.WriteArray(np.where(np.isfinite(grid.data), grid.data, nodata).astype(np.float32))
+        band.WriteArray(
+            np.where(np.isfinite(grid.data), grid.data, nodata).astype(
+                np.float32
+            )
+        )
         if not north_up:
             # Swapped (or mirrored) axes: written north-up, as the analysis
             # and other programs expect.
             cell = math.sqrt(abs(gt[1] * gt[5] - gt[2] * gt[4]))
             warped = gdal.Warp(
-                path, dataset, format="GTiff", xRes=cell, yRes=cell,
-                srcNodata=nodata, dstNodata=nodata, resampleAlg="near",
+                path,
+                dataset,
+                format="GTiff",
+                xRes=cell,
+                yRes=cell,
+                srcNodata=nodata,
+                dstNodata=nodata,
+                resampleAlg="near",
                 creationOptions=options,
             )
             dataset = None
             if warped is None:
                 raise LocalSourceError("write_failed")
             dataset = warped
-        dataset.SetMetadataItem(METADATA_KEY, json.dumps(record, ensure_ascii=False))
+        dataset.SetMetadataItem(
+            METADATA_KEY, json.dumps(record, ensure_ascii=False)
+        )
         dataset.FlushCache()
         dataset = None
     return path
@@ -583,7 +646,9 @@ def update_record(path, record):
 
     with _quiet_gdal():
         dataset = gdal.Open(path, gdal.GA_Update)
-        dataset.SetMetadataItem(METADATA_KEY, json.dumps(record, ensure_ascii=False))
+        dataset.SetMetadataItem(
+            METADATA_KEY, json.dumps(record, ensure_ascii=False)
+        )
         dataset.FlushCache()
         dataset = None
 
@@ -594,7 +659,11 @@ def read_record(path):
     try:
         with _quiet_gdal():
             dataset = gdal.Open(path)
-            text = dataset.GetMetadataItem(METADATA_KEY) if dataset is not None else None
+            text = (
+                dataset.GetMetadataItem(METADATA_KEY)
+                if dataset is not None
+                else None
+            )
             dataset = None
     except RuntimeError:
         return None
@@ -611,12 +680,18 @@ def edit_path(project_directory, root_folder, original_path):
 
     stem = os.path.splitext(os.path.basename(original_path))[0]
     return os.path.join(
-        project_directory, root_folder, EDIT_FOLDER, stem + EDIT_SUFFIX + ".tif"
+        project_directory,
+        root_folder,
+        EDIT_FOLDER,
+        stem + EDIT_SUFFIX + ".tif",
     )
 
 
 def is_edit_file(path):
-    return os.path.basename(os.path.dirname(os.path.abspath(path or ""))) == EDIT_FOLDER
+    return (
+        os.path.basename(os.path.dirname(os.path.abspath(path or "")))
+        == EDIT_FOLDER
+    )
 
 
 # --------------------------------------------------------------------------
@@ -628,8 +703,16 @@ def grid_extent(grid):
 
     rows, cols = grid.data.shape
     gt = grid.gt
-    xs = [gt[0] + col * gt[1] + row * gt[2] for col in (0, cols) for row in (0, rows)]
-    ys = [gt[3] + col * gt[4] + row * gt[5] for col in (0, cols) for row in (0, rows)]
+    xs = [
+        gt[0] + col * gt[1] + row * gt[2]
+        for col in (0, cols)
+        for row in (0, rows)
+    ]
+    ys = [
+        gt[3] + col * gt[4] + row * gt[5]
+        for col in (0, cols)
+        for row in (0, rows)
+    ]
     return (min(xs), min(ys), max(xs), max(ys))
 
 
@@ -647,7 +730,9 @@ def compare_with_reference(path, reference, check=None):
 
     ref_data, ref_gt, ref_wkt = reference
     rows, cols = ref_data.shape
-    target = gdal.GetDriverByName("MEM").Create("", cols, rows, 1, gdal.GDT_Float64)
+    target = gdal.GetDriverByName("MEM").Create(
+        "", cols, rows, 1, gdal.GDT_Float64
+    )
     target.SetGeoTransform(ref_gt)
     target.SetProjection(ref_wkt)
     band = target.GetRasterBand(1)

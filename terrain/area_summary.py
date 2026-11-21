@@ -51,8 +51,11 @@ LARGEST_CATCHMENTS = 5
 def _elevation_bands(values, cell_area):
     low, high = float(values.min()), float(values.max())
     step = next(
-        (step for step in BAND_STEPS
-         if math.ceil(high / step) - math.floor(low / step) <= MAX_BANDS),
+        (
+            step
+            for step in BAND_STEPS
+            if math.ceil(high / step) - math.floor(low / step) <= MAX_BANDS
+        ),
         BAND_STEPS[-1],
     )
     bands = []
@@ -62,11 +65,13 @@ def _elevation_bands(values, cell_area):
         cells = int(np.count_nonzero((values >= start) & (values < end)))
         if end >= high:
             cells = int(np.count_nonzero(values >= start))
-        bands.append({
-            "label": "{:g} - {:g}".format(start, end),
-            "area_ha": cells * cell_area / 10000.0,
-            "percent": 100.0 * cells / max(1, values.size),
-        })
+        bands.append(
+            {
+                "label": "{:g} - {:g}".format(start, end),
+                "area_ha": cells * cell_area / 10000.0,
+                "percent": 100.0 * cells / max(1, values.size),
+            }
+        )
         start = end
     return bands
 
@@ -80,7 +85,12 @@ def _largest_catchments(package_path, member):
     for feature in layer:
         area = feature.GetField("area_ha")
         if area is not None:
-            areas.append({"area_ha": float(area), "complete": bool(feature.GetField("complete"))})
+            areas.append(
+                {
+                    "area_ha": float(area),
+                    "complete": bool(feature.GetField("complete")),
+                }
+            )
     feature = None
     layer = None
     dataset = None
@@ -98,7 +108,9 @@ def _area_mask(package_path, manifest, gt, shape, projection):
     area = manifest.get("area") or {}
     try:
         with zipfile.ZipFile(package_path) as package:
-            wkt = package.read(area.get("geometry") or "area/aoi.wkt").decode("utf-8")
+            wkt = package.read(area.get("geometry") or "area/aoi.wkt").decode(
+                "utf-8"
+            )
     except (OSError, KeyError, zipfile.BadZipFile):
         return None
     geometry = ogr.CreateGeometryFromWkt(wkt)
@@ -110,7 +122,9 @@ def _area_mask(package_path, manifest, gt, shape, projection):
     for srs in (source, target):
         srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
     geometry.Transform(osr.CoordinateTransformation(source, target))
-    raster = gdal.GetDriverByName("MEM").Create("", shape[1], shape[0], 1, gdal.GDT_Byte)
+    raster = gdal.GetDriverByName("MEM").Create(
+        "", shape[1], shape[0], 1, gdal.GDT_Byte
+    )
     raster.SetGeoTransform(gt)
     raster.SetProjection(projection)
     vectors = ogr.GetDriverByName("Memory").CreateDataSource("")
@@ -149,12 +163,14 @@ def slope_classes(raster_path, items, package_path=None, manifest=None):
     lower = -np.inf
     for upper, label, color in items:
         cells = int(np.count_nonzero((values > lower) & (values <= upper)))
-        classes.append({
-            "label": label,
-            "color": color,
-            "area_ha": cells * cell_area / 10000.0,
-            "percent": 100.0 * cells / max(1, values.size),
-        })
+        classes.append(
+            {
+                "label": label,
+                "color": color,
+                "area_ha": cells * cell_area / 10000.0,
+                "percent": 100.0 * cells / max(1, values.size),
+            }
+        )
         lower = upper
     return classes, (float(values.mean()) if values.size else float("nan"))
 
@@ -186,12 +202,16 @@ def area_summary(package_path, manifest):
     classes = []
     lower = -np.inf
     for upper, label in SLOPE_CLASSES:
-        cells = int(np.count_nonzero((slope_values > lower) & (slope_values <= upper)))
-        classes.append({
-            "label": label,
-            "area_ha": cells * cell_area / 10000.0,
-            "percent": 100.0 * cells / max(1, slope_values.size),
-        })
+        cells = int(
+            np.count_nonzero((slope_values > lower) & (slope_values <= upper))
+        )
+        classes.append(
+            {
+                "label": label,
+                "area_ha": cells * cell_area / 10000.0,
+                "percent": 100.0 * cells / max(1, slope_values.size),
+            }
+        )
         lower = upper
     watershed = manifest.get("watershed") or {}
     largest = []
@@ -202,7 +222,9 @@ def area_summary(package_path, manifest):
         "elevation_min": float(values.min()),
         "elevation_max": float(values.max()),
         "elevation_mean": float(values.mean()),
-        "slope_mean": float(slope_values.mean()) if slope_values.size else float("nan"),
+        "slope_mean": float(slope_values.mean())
+        if slope_values.size
+        else float("nan"),
         "slope_classes": classes,
         "catchments": watershed.get("catchments") if watershed else None,
         "catchments_cut": watershed.get("incomplete") if watershed else None,

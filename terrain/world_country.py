@@ -24,7 +24,10 @@ def _countries():
             from osgeo import ogr
 
             path = os.path.join(
-                QgsApplication.pkgDataPath(), "resources", "data", "world_map.gpkg"
+                QgsApplication.pkgDataPath(),
+                "resources",
+                "data",
+                "world_map.gpkg",
             )
             source = None
             if os.path.exists(path):
@@ -34,7 +37,9 @@ def _countries():
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", FutureWarning)
                     source = ogr.Open(path)
-            layer = source.GetLayer("countries") if source is not None else None
+            layer = (
+                source.GetLayer("countries") if source is not None else None
+            )
             if layer is not None:
                 definition = layer.GetLayerDefn()
                 code = definition.GetFieldIndex("iso_a2")
@@ -58,7 +63,10 @@ def country_wkt(code):
     try:
         layer.ResetReading()
         for feature in layer:
-            if feature.GetField(code_index) == code and feature.GetGeometryRef() is not None:
+            if (
+                feature.GetField(code_index) == code
+                and feature.GetGeometryRef() is not None
+            ):
                 shapes.append(feature.GetGeometryRef().ExportToWkt())
         layer.ResetReading()
     except Exception:  # noqa: BLE001 - no shape then
@@ -123,7 +131,10 @@ def touches_country(code, bbox84, margin=COUNTRY_MARGIN_DEG):
         from osgeo import ogr
 
         x0, y0, x1, y1 = (
-            bbox84[0] - margin, bbox84[1] - margin, bbox84[2] + margin, bbox84[3] + margin
+            bbox84[0] - margin,
+            bbox84[1] - margin,
+            bbox84[2] + margin,
+            bbox84[3] + margin,
         )
         ring = ogr.Geometry(ogr.wkbLinearRing)
         for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)):

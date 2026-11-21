@@ -22,11 +22,19 @@ import os
 import shutil
 import tempfile
 import threading
+
 # Only builds the GeoPDF composition XML for GDAL; no XML is read or parsed.
 import xml.etree.ElementTree as ElementTree  # nosec B405
 
 from qgis.PyQt.QtCore import QMarginsF, QSize, QSizeF, pyqtSignal
-from qgis.PyQt.QtGui import QColor, QPageLayout, QPageSize, QPainter, QPdfWriter, QTransform
+from qgis.PyQt.QtGui import (
+    QColor,
+    QPageLayout,
+    QPageSize,
+    QPainter,
+    QPdfWriter,
+    QTransform,
+)
 from qgis.core import (
     Qgis,
     QgsCoordinateReferenceSystem,
@@ -74,7 +82,9 @@ class _FeatureCollector(QgsRenderedFeatureHandlerInterface):
     def __init__(self, dpi, page_height_px):
         super().__init__()
         scale = 72.0 / dpi
-        self._transform = QTransform.fromTranslate(0, page_height_px * scale).scale(scale, -scale)
+        self._transform = QTransform.fromTranslate(
+            0, page_height_px * scale
+        ).scale(scale, -scale)
         self._lock = threading.Lock()
         self.features = []
 
@@ -118,7 +128,17 @@ class GeoPdfTask(QgsTask):
     partStarted = pyqtSignal(int, int, str, bool)
     composing = pyqtSignal()
 
-    def __init__(self, path, paper_mm, dpi, layers, extent, crs, transform_context, flags):
+    def __init__(
+        self,
+        path,
+        paper_mm,
+        dpi,
+        layers,
+        extent,
+        crs,
+        transform_context,
+        flags,
+    ):
         super().__init__("GeoPDF", QgsTask.Flag.CanCancel)
         self.path = path
         self.errorMessage = ""
@@ -162,14 +182,29 @@ class GeoPdfTask(QgsTask):
                 clone.setBlendMode(_CompositionMode.CompositionMode_SourceOver)
             else:
                 # A blend mode a PDF cannot do stays in the drawing.
-                opacity, mode = 1.0, _CompositionMode.CompositionMode_SourceOver
-            labelled = isinstance(clone, QgsVectorLayer) and clone.labelsEnabled()
-            display = clone.displayField() if isinstance(clone, QgsVectorLayer) else ""
-            self._layers.append({
-                "layer": clone, "id": layer.id(), "name": layer.name(),
-                "opacity": opacity, "mode": mode, "labelled": labelled,
-                "display": display,
-            })
+                opacity, mode = (
+                    1.0,
+                    _CompositionMode.CompositionMode_SourceOver,
+                )
+            labelled = (
+                isinstance(clone, QgsVectorLayer) and clone.labelsEnabled()
+            )
+            display = (
+                clone.displayField()
+                if isinstance(clone, QgsVectorLayer)
+                else ""
+            )
+            self._layers.append(
+                {
+                    "layer": clone,
+                    "id": layer.id(),
+                    "name": layer.name(),
+                    "opacity": opacity,
+                    "mode": mode,
+                    "labelled": labelled,
+                    "display": display,
+                }
+            )
 
         # Parts in drawing order: the layers from the bottom up, then the
         # labels (drawn above every layer, as in the map).
@@ -185,7 +220,9 @@ class GeoPdfTask(QgsTask):
 
     def _part_path(self):
         self._partCount += 1
-        return os.path.join(self._folder, "part_{}.pdf".format(self._partCount))
+        return os.path.join(
+            self._folder, "part_{}.pdf".format(self._partCount)
+        )
 
     def _prepare(self, part, base):
         """Writer, painter and render job of a part (main thread, as QGIS)."""
@@ -196,16 +233,25 @@ class GeoPdfTask(QgsTask):
             settings.setFlag(Qgis.MapSettingsFlag.DrawLabeling, True)
             settings.setFlag(Qgis.MapSettingsFlag.SkipSymbolRendering, True)
         else:
-            settings.setFlag(Qgis.MapSettingsFlag.DrawLabeling, not part.layer["labelled"])
+            settings.setFlag(
+                Qgis.MapSettingsFlag.DrawLabeling, not part.layer["labelled"]
+            )
             if isinstance(part.layer["layer"], QgsVectorLayer):
-                part.collector = _FeatureCollector(self._dpi, self._size.height())
+                part.collector = _FeatureCollector(
+                    self._dpi, self._size.height()
+                )
                 settings.addRenderedFeatureHandler(part.collector)
         part.writer = QPdfWriter(part.path)
         part.writer.setPageOrientation(QPageLayout.Orientation.Portrait)
-        part.writer.setPageSize(QPageSize(
-            QSizeF(self._size.width() * 25.4 / self._dpi, self._size.height() * 25.4 / self._dpi),
-            QPageSize.Unit.Millimeter,
-        ))
+        part.writer.setPageSize(
+            QPageSize(
+                QSizeF(
+                    self._size.width() * 25.4 / self._dpi,
+                    self._size.height() * 25.4 / self._dpi,
+                ),
+                QPageSize.Unit.Millimeter,
+            )
+        )
         part.writer.setPageMargins(QMarginsF(0, 0, 0, 0))
         part.writer.setResolution(int(self._dpi))
         part.painter = QPainter(part.writer)
@@ -233,7 +279,9 @@ class GeoPdfTask(QgsTask):
         for index, part in enumerate(self._parts, start=1):
             if self.isCanceled():
                 return False
-            self.partStarted.emit(index, total, part.layer["name"], part.labels)
+            self.partStarted.emit(
+                index, total, part.layer["name"], part.labels
+            )
             self.setProgress(100.0 * (index - 1) / (total + 1))
             with self._lock:
                 self._currentJob = part.job
@@ -255,14 +303,17 @@ class GeoPdfTask(QgsTask):
         return self._compose(composition)
 
     def _write_features(self):
-        """GeoPackage of each layer's drawn features: {layer id: (path, name)}."""
+        ("GeoPackage of each layer's drawn features: {layer id: (path, "
+         'name)}.')
 
         written = {}
         for part in self._parts:
             if part.collector is None or not part.collector.features:
                 continue
             features = part.collector.features
-            path = os.path.join(self._folder, "features_{}.gpkg".format(len(written) + 1))
+            path = os.path.join(
+                self._folder, "features_{}.gpkg".format(len(written) + 1)
+            )
             options = QgsVectorFileWriter.SaveVectorOptions()
             options.driverName = "GPKG"
             options.layerName = "features"
@@ -275,7 +326,10 @@ class GeoPdfTask(QgsTask):
                 options,
                 QgsFeatureSink.SinkFlag.RegeneratePrimaryKey,
             )
-            if writer is None or writer.hasError() != QgsVectorFileWriter.WriterError.NoError:
+            if (
+                writer is None
+                or writer.hasError() != QgsVectorFileWriter.WriterError.NoError
+            ):
                 # The map is still worth having without these attributes.
                 continue
             for feature in features:
@@ -291,62 +345,101 @@ class GeoPdfTask(QgsTask):
         page_h = self._size.height() * 72.0 / self._dpi
         root = ElementTree.Element("PDFComposition")
         metadata = ElementTree.SubElement(root, "Metadata")
-        ElementTree.SubElement(metadata, "Creator").text = "Quick Landscape Analysis Explorer"
+        ElementTree.SubElement(
+            metadata, "Creator"
+        ).text = "Quick Landscape Analysis Explorer"
 
         # Layer tree: every layer drawn in the preview is on when it opens.
         tree = ElementTree.SubElement(root, "LayerTree")
         for entry in self._layers:
-            ElementTree.SubElement(tree, "Layer", {
-                "id": entry["id"], "name": entry["name"], "initiallyVisible": "true",
-            })
+            ElementTree.SubElement(
+                tree,
+                "Layer",
+                {
+                    "id": entry["id"],
+                    "name": entry["name"],
+                    "initiallyVisible": "true",
+                },
+            )
 
         page = ElementTree.SubElement(root, "Page")
         ElementTree.SubElement(page, "DPI").text = "72"
         ElementTree.SubElement(page, "Width").text = repr(page_w)
         ElementTree.SubElement(page, "Height").text = repr(page_h)
 
-        georeferencing = ElementTree.SubElement(page, "Georeferencing", {
-            "id": "georeferenced_0", "ISO32000ExtensionFormat": "true",
-        })
+        georeferencing = ElementTree.SubElement(
+            page,
+            "Georeferencing",
+            {
+                "id": "georeferenced_0",
+                "ISO32000ExtensionFormat": "true",
+            },
+        )
         srs = self._crs.authid()
         if not srs or srs.lower().startswith("user"):
             srs = self._crs.toWkt(Qgis.CrsWktVariant.PreferredGdal)
         ElementTree.SubElement(georeferencing, "SRS").text = srs
-        ElementTree.SubElement(georeferencing, "BoundingBox", {
-            "x1": "0", "y1": "0", "x2": repr(page_w), "y2": repr(page_h),
-        })
+        ElementTree.SubElement(
+            georeferencing,
+            "BoundingBox",
+            {
+                "x1": "0",
+                "y1": "0",
+                "x2": repr(page_w),
+                "y2": repr(page_h),
+            },
+        )
         width, height = self._size.width(), self._size.height()
         for px, py in ((0, 0), (width, 0), (width, height), (0, height)):
             point = self._mapToPixel.toMapCoordinates(px, py)
-            ElementTree.SubElement(georeferencing, "ControlPoint", {
-                "x": repr(px * 72.0 / self._dpi),
-                "y": repr((height - py) * 72.0 / self._dpi),
-                "GeoX": repr(point.x()),
-                "GeoY": repr(point.y()),
-            })
+            ElementTree.SubElement(
+                georeferencing,
+                "ControlPoint",
+                {
+                    "x": repr(px * 72.0 / self._dpi),
+                    "y": repr((height - py) * 72.0 / self._dpi),
+                    "GeoX": repr(point.x()),
+                    "GeoY": repr(point.y()),
+                },
+            )
 
         content = ElementTree.SubElement(page, "Content")
         for part in self._parts:
-            switch = ElementTree.SubElement(content, "IfLayerOn", {"layerId": part.layer["id"]})
+            switch = ElementTree.SubElement(
+                content, "IfLayerOn", {"layerId": part.layer["id"]}
+            )
             pdf = ElementTree.SubElement(switch, "PDF", {"dataset": part.path})
             if not part.labels and (
                 part.layer["opacity"] != 1.0
-                or part.layer["mode"] != _CompositionMode.CompositionMode_SourceOver
+                or part.layer["mode"]
+                != _CompositionMode.CompositionMode_SourceOver
             ):
-                ElementTree.SubElement(pdf, "Blending", {
-                    "opacity": repr(float(part.layer["opacity"])),
-                    "function": _PDF_BLEND_MODES[part.layer["mode"]],
-                })
+                ElementTree.SubElement(
+                    pdf,
+                    "Blending",
+                    {
+                        "opacity": repr(float(part.layer["opacity"])),
+                        "function": _PDF_BLEND_MODES[part.layer["mode"]],
+                    },
+                )
         # The features (with attributes) are not drawn; they are there to be
         # identified in a PDF viewer, as in QGIS's GeoPDF.
         for entry in reversed(self._layers):
             if entry["id"] not in vectors:
                 continue
             path, layer_name = vectors[entry["id"]]
-            switch = ElementTree.SubElement(content, "IfLayerOn", {"layerId": entry["id"]})
-            vector = ElementTree.SubElement(switch, "Vector", {
-                "dataset": path, "layer": layer_name, "visible": "false",
-            })
+            switch = ElementTree.SubElement(
+                content, "IfLayerOn", {"layerId": entry["id"]}
+            )
+            vector = ElementTree.SubElement(
+                switch,
+                "Vector",
+                {
+                    "dataset": path,
+                    "layer": layer_name,
+                    "visible": "false",
+                },
+            )
             structure = {"displayLayerName": entry["name"]}
             if entry["display"]:
                 structure["fieldToDisplay"] = entry["display"]
@@ -368,7 +461,11 @@ class GeoPdfTask(QgsTask):
         gdal.PushErrorHandler(collect)
         try:
             dataset = driver.Create(
-                self.path, 0, 0, 0, gdal.GDT_Unknown,
+                self.path,
+                0,
+                0,
+                0,
+                gdal.GDT_Unknown,
                 options=["COMPOSITION_FILE={}".format(composition)],
             )
             ok = dataset is not None
@@ -376,7 +473,9 @@ class GeoPdfTask(QgsTask):
         finally:
             gdal.PopErrorHandler()
         if not ok:
-            self.errorMessage = "\n".join(errors) or "GDAL could not write the PDF"
+            self.errorMessage = (
+                "\n".join(errors) or "GDAL could not write the PDF"
+            )
         return ok
 
     def finished(self, result):

@@ -9,11 +9,18 @@ change, moving the layers smoothly.
 """
 
 from qgis.PyQt.QtCore import QEvent, QPointF, QVariantAnimation, Qt
-from qgis.PyQt.QtGui import QColor, QPainter, QPainterPath, QPalette, QPen, QPolygonF
+from qgis.PyQt.QtGui import (
+    QColor,
+    QPainter,
+    QPainterPath,
+    QPalette,
+    QPen,
+    QPolygonF,
+)
 from qgis.PyQt.QtWidgets import QSizePolicy, QWidget
 
-ARROW_ZONE = 44      # width of the arrow band (px)
-LABEL_GAP = 6        # gap between an arrow tip and its layer name
+ARROW_ZONE = 44  # width of the arrow band (px)
+LABEL_GAP = 6  # gap between an arrow tip and its layer name
 MOVED_COLOR = QColor("#2b6cb0")  # arrows whose layer changes position
 
 
@@ -38,7 +45,9 @@ class LayerOrderArrows(QWidget):
         self._animation.setEndValue(1.0)
         self._animation.valueChanged.connect(self._animate)
         # The layer names sit at the right edge; the arrows take the rest.
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         for _key, check in self._checks:
             check.toggled.connect(self.refresh)
             check.installEventFilter(self)
@@ -50,7 +59,8 @@ class LayerOrderArrows(QWidget):
     def _text_width(self):
         metrics = self.fontMetrics()
         return max(
-            (metrics.horizontalAdvance(name) for _key, name in self._layers), default=0
+            (metrics.horizontalAdvance(name) for _key, name in self._layers),
+            default=0,
         )
 
     def minimumSizeHint(self):
@@ -98,7 +108,9 @@ class LayerOrderArrows(QWidget):
             self.update()
             return
         current = self._current_rows()
-        self._from = {key: current.get(key, row) for key, row in targets.items()}
+        self._from = {
+            key: current.get(key, row) for key, row in targets.items()
+        }
         self._to = targets
         self._animation.stop()
         self._progress = 0.0
@@ -111,13 +123,17 @@ class LayerOrderArrows(QWidget):
     def _current_rows(self):
         p = self._progress
         return {
-            key: self._from.get(key, row) + (row - self._from.get(key, row)) * p
+            key: self._from.get(key, row)
+            + (row - self._from.get(key, row)) * p
             for key, row in self._to.items()
         }
 
     def eventFilter(self, watched, event):
-        if event.type() in (QEvent.Type.Move, QEvent.Type.Resize,
-                            QEvent.Type.EnabledChange):
+        if event.type() in (
+            QEvent.Type.Move,
+            QEvent.Type.Resize,
+            QEvent.Type.EnabledChange,
+        ):
             if event.type() == QEvent.Type.EnabledChange:
                 self.refresh()
             else:
@@ -137,11 +153,15 @@ class LayerOrderArrows(QWidget):
         text_color = self.palette().color(QPalette.ColorRole.WindowText)
         muted = QColor(text_color)
         muted.setAlpha(110)
-        check_rows = {key: index for index, (key, _check) in enumerate(self._checks)}
+        check_rows = {
+            key: index for index, (key, _check) in enumerate(self._checks)
+        }
         checks = dict(self._checks)
         names = dict(self._layers)
         metrics = self.fontMetrics()
-        label_x = float(max(ARROW_ZONE + LABEL_GAP, self.width() - self._text_width() - 2))
+        label_x = float(
+            max(ARROW_ZONE + LABEL_GAP, self.width() - self._text_width() - 2)
+        )
 
         def y_at(row):
             low = max(0, min(int(row), len(ys) - 1))
@@ -153,7 +173,10 @@ class LayerOrderArrows(QWidget):
             # Layer name.
             painter.setPen(text_color)
             painter.drawText(
-                QPointF(label_x, y_end + (metrics.ascent() - metrics.descent()) / 2.0),
+                QPointF(
+                    label_x,
+                    y_end + (metrics.ascent() - metrics.descent()) / 2.0,
+                ),
                 names[key],
             )
             if key not in check_rows or not self._active(checks[key]):
@@ -167,15 +190,20 @@ class LayerOrderArrows(QWidget):
             tip_x = label_x - 3
             path = QPainterPath(QPointF(1.0, y_start))
             path.cubicTo(
-                QPointF(tip_x * 0.55, y_start), QPointF(tip_x * 0.45, y_end),
+                QPointF(tip_x * 0.55, y_start),
+                QPointF(tip_x * 0.45, y_end),
                 QPointF(tip_x - 5.0, y_end),
             )
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawPath(path)
             painter.setBrush(color)
-            painter.drawPolygon(QPolygonF([
-                QPointF(tip_x, y_end),
-                QPointF(tip_x - 6.0, y_end - 3.2),
-                QPointF(tip_x - 6.0, y_end + 3.2),
-            ]))
+            painter.drawPolygon(
+                QPolygonF(
+                    [
+                        QPointF(tip_x, y_end),
+                        QPointF(tip_x - 6.0, y_end - 3.2),
+                        QPointF(tip_x - 6.0, y_end + 3.2),
+                    ]
+                )
+            )
         painter.end()

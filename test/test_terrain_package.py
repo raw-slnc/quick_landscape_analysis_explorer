@@ -36,7 +36,9 @@ class TerrainPackageTest(unittest.TestCase):
             dataset.SetGeoTransform((500000, 5, 0, 3900500, 0, -5))
             dataset.SetProjection(srs.ExportToWkt())
             y, x = np.mgrid[0:100, 0:100]
-            dataset.GetRasterBand(1).WriteArray((x + y * 0.5).astype(np.float32))
+            dataset.GetRasterBand(1).WriteArray(
+                (x + y * 0.5).astype(np.float32)
+            )
             dataset = None
 
             result = create_terrain_package(
@@ -75,7 +77,9 @@ class TerrainPackageTest(unittest.TestCase):
                     "styles/slope.qml",
                 }.issubset(names)
             )
-            slope = gdal.Open("/vsizip/" + package_path + "/outputs/slope_deg.tif")
+            slope = gdal.Open(
+                "/vsizip/" + package_path + "/outputs/slope_deg.tif"
+            )
             self.assertIsNotNone(slope)
             self.assertGreater(slope.RasterXSize, 0)
             self.assertGreater(slope.RasterYSize, 0)
@@ -87,7 +91,9 @@ class TerrainPackageTest(unittest.TestCase):
             ):
                 raster = gdal.Open("/vsizip/" + package_path + "/" + member)
                 self.assertIsNotNone(raster)
-                self.assertEqual((raster.RasterXSize, raster.RasterYSize), expected_size)
+                self.assertEqual(
+                    (raster.RasterXSize, raster.RasterYSize), expected_size
+                )
                 raster = None
             self.assertAlmostEqual(
                 slope.RasterXSize / slope.RasterYSize,
@@ -96,11 +102,15 @@ class TerrainPackageTest(unittest.TestCase):
             )
             with zipfile.ZipFile(package_path) as archive:
                 manifest = json.loads(archive.read("analysis.json"))
-            self.assertEqual(manifest["output_frame"]["orientation"], "portrait")
+            self.assertEqual(
+                manifest["output_frame"]["orientation"], "portrait"
+            )
             self.assertEqual(
                 manifest["analysis_grid"]["columns"], slope.RasterXSize
             )
-            self.assertEqual(manifest["analysis_grid"]["rows"], slope.RasterYSize)
+            self.assertEqual(
+                manifest["analysis_grid"]["rows"], slope.RasterYSize
+            )
             slope = None
 
             landscape_path = os.path.join(folder, "analyses", "landscape.zip")

@@ -43,17 +43,26 @@ import os
 
 from .remote_zip import fetch_entry_bytes
 
-_SHEET_INDEX_PATH = os.path.join(os.path.dirname(__file__), "data", "nagano_rinmu_sheet_index.json")
+_SHEET_INDEX_PATH = os.path.join(
+    os.path.dirname(__file__), "data", "nagano_rinmu_sheet_index.json"
+)
 _sheet_index_cache = None
 
 SHEET_W = 4000
 SHEET_H = 3000
-_QUAD = {1: (0, 0), 2: (1, 0), 3: (0, 1), 4: (1, 1)}  # (col,row) 1=TL,2=TR,3=BL,4=BR
+_QUAD = {
+    1: (0, 0),
+    2: (1, 0),
+    3: (0, 1),
+    4: (1, 1),
+}  # (col,row) 1=TL,2=TR,3=BL,4=BR
 
 # 12地域zip（県全域、市町村より粗い単位）。2026-09-23、CKAN nagano-dem データセットの
 # リソース一覧から取得（プレサインではない固定URL、Range対応確認済み）。
-_BASE_URL = ("https://gsic-opendata.s3.ap-northeast-1.amazonaws.com/local-gov/nagano/"
-             "forestry-research-center/dem/nagano-dem/download/nagano/dem/")
+_BASE_URL = (
+    "https://gsic-opendata.s3.ap-northeast-1.amazonaws.com/local-gov/nagano/"
+    "forestry-research-center/dem/nagano-dem/download/nagano/dem/"
+)
 ZIP_URLS = [
     _BASE_URL + "H24-27(kamiina).zip",
     _BASE_URL + "H24-28(shimoina).zip",
@@ -141,13 +150,19 @@ def tiles_for_extent(xmin: float, ymin: float, xmax: float, ymax: float):
             for col in range(col_lo, col_hi + 1):
                 outer_col, inner_col = divmod(col, 2)
                 outer_row, inner_row = divmod(row, 2)
-                tens = next(k for k, v in _QUAD.items() if v == (outer_col, outer_row))
-                units = next(k for k, v in _QUAD.items() if v == (inner_col, inner_row))
+                tens = next(
+                    k for k, v in _QUAD.items() if v == (outer_col, outer_row)
+                )
+                units = next(
+                    k for k, v in _QUAD.items() if v == (inner_col, inner_row)
+                )
                 codes.append(f"{sheet_code}{tens}{units}")
     return codes
 
 
-def download_tile_tif(code: str, out_dir: str, cancel_cb=None, progress_cb=None):
+def download_tile_tif(
+    code: str, out_dir: str, cancel_cb=None, progress_cb=None
+):
     """タイルコードに対応するGeoTIFFを取得しローカルパスを返す。
     市町村のような索引が無いため、12地域zipを順に試す（central directory確認）。
     見つからない場合は None を返す。
@@ -169,9 +184,16 @@ def download_tile_tif(code: str, out_dir: str, cancel_cb=None, progress_cb=None)
                 detail = (info[1], info[2]) if phase == "downloading" else info
                 progress_cb(phase, _label, detail)
 
-        data = fetch_entry_bytes(url, f"{code}_2013.tif", progress_cb=_relay, cancel_cb=cancel_cb)
+        data = fetch_entry_bytes(
+            url, f"{code}_2013.tif", progress_cb=_relay, cancel_cb=cancel_cb
+        )
         if data is None:
-            data = fetch_entry_bytes(url, f"{code}_2014.tif", progress_cb=_relay, cancel_cb=cancel_cb)
+            data = fetch_entry_bytes(
+                url,
+                f"{code}_2014.tif",
+                progress_cb=_relay,
+                cancel_cb=cancel_cb,
+            )
         if data is not None:
             with open(tif_cache, "wb") as fh:
                 fh.write(data)

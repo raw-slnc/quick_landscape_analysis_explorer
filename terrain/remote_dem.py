@@ -31,13 +31,18 @@ from . import sources
 
 _USER_AGENT = "Quick Landscape Analysis Explorer (QGIS plugin)"
 
-_AHN_WCS = ("https://service.pdok.nl/rws/ahn/wcs/v1_0?service=WCS&request=GetCoverage"
-            "&version=2.0.1&coverageId={layer}&subset=x({x0},{x1})&subset=y({y0},{y1})"
-            "&format=image/tiff")
-_IGN_WMSR = ("https://data.geopf.fr/wms-r/wms?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap"
-             "&LAYERS={layer}&STYLES=&CRS=EPSG:2154&BBOX={x0},{y0},{x1},{y1}"
-             "&WIDTH={w}&HEIGHT={h}&FORMAT=image/geotiff")
-_NZ_BASE = "https://nz-elevation.s3.ap-southeast-2.amazonaws.com/new-zealand/new-zealand/dem_1m/2193/"
+_AHN_WCS = (
+    "https://service.pdok.nl/rws/ahn/wcs/v1_0?service=WCS&request=GetCoverage"
+    "&version=2.0.1&coverageId={layer}&subset=x({x0},{x1})&subset=y({y0},{y1})"
+    "&format=image/tiff"
+)
+_IGN_WMSR = (
+    "https://data.geopf.fr/wms-r/wms?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap"
+    "&LAYERS={layer}&STYLES=&CRS=EPSG:2154&BBOX={x0},{y0},{x1},{y1}"
+    "&WIDTH={w}&HEIGHT={h}&FORMAT=image/geotiff"
+)
+_NZ_BASE = ('https://nz-elevation.s3.ap-southeast-2.amazonaws.com/new-zeal'
+            'and/new-zealand/dem_1m/2193/')
 # German state DGM1: 1 km tiles in ETRS89 / UTM 32N named by their lower-left
 # corner in km. Rhineland-Palatinate puts the survey year in the file name, so
 # its file list is read first; Bavaria's names have no year.
@@ -48,48 +53,76 @@ _BY_DGM1 = "https://download1.bayernwolke.de/a/dgm/dgm1/"
 # credit, service) come from the country files (terrain/sources/).
 REMOTE_SOURCES = {
     "ahn_dtm": dict(
-        kind="ogc", url=_AHN_WCS, layer="dtm_05m", epsg=28992, cell=0.5, chunk_px=1000,
+        kind="ogc",
+        url=_AHN_WCS,
+        layer="dtm_05m",
+        epsg=28992,
+        cell=0.5,
+        chunk_px=1000,
         prefix="ahn_dtm",
         # The coverage's extent (DescribeCoverage of dtm_05m), in RD New.
         extent=(10000.0, 306250.0, 280000.0, 618750.0),
     ),
     "ign_mnt": dict(
-        kind="ogc", url=_IGN_WMSR,
+        kind="ogc",
+        url=_IGN_WMSR,
         layer="IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93",
-        epsg=2154, cell=0.5, chunk_px=2000,
+        epsg=2154,
+        cell=0.5,
+        chunk_px=2000,
         # WMS-R serves any image size: one coarse look first (see _probe_ogc).
         probe_px=512,
         prefix="ign_lidarhd_mnt",
     ),
     "linz_dem": dict(kind="nzcog", epsg=2193, cell=1.0, prefix="linz_dem"),
-    "rlp_dgm1": dict(kind="de_tiles", state="rlp", epsg=25832, cell=1.0, prefix="rlp_dgm1"),
-    "by_dgm1": dict(kind="de_tiles", state="by", epsg=25832, cell=1.0, prefix="by_dgm1"),
+    "rlp_dgm1": dict(
+        kind="de_tiles", state="rlp", epsg=25832, cell=1.0, prefix="rlp_dgm1"
+    ),
+    "by_dgm1": dict(
+        kind="de_tiles", state="by", epsg=25832, cell=1.0, prefix="by_dgm1"
+    ),
 }
 for _key, _spec in REMOTE_SOURCES.items():
     _facts = sources.get(_key)["facts"]
-    _spec.update(label=_facts["dataset"], provider=_facts["provider"],
-                 licence=_facts["licence"], service=_facts["service"])
+    _spec.update(
+        label=_facts["dataset"],
+        provider=_facts["provider"],
+        licence=_facts["licence"],
+        service=_facts["service"],
+    )
     if "credit" in _facts:
         _spec["credit"] = _facts["credit"]
     if "survey_years" in _facts:
         _spec["survey_years"] = list(_facts["survey_years"])
 
 LERC_MISSING_MESSAGE = (
-    "This QGIS's GDAL cannot read LERC-compressed GeoTIFFs, which the LINZ data uses. "
-    "Use a QGIS build whose GDAL supports LERC.")
+    "This QGIS's GDAL cannot read LERC-compressed GeoTIFFs, which the "
+    'LINZ data uses. '
+    "Use a QGIS build whose GDAL supports LERC."
+)
 
 
 class RemoteDemError(Exception):
     """A message for the user."""
 
 
-def _http_download(ctx, url, dest, timeout=180, accept=("tif",),
-                   on_headers=None, on_bytes=None):
+def _http_download(
+    ctx,
+    url,
+    dest,
+    timeout=180,
+    accept=("tif",),
+    on_headers=None,
+    on_bytes=None,
+):
     """Save url to dest, checking for cancellation every 64 KB."""
     if not url.startswith("https://"):
         raise RemoteDemError(f"Invalid URL: {url}")
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "wb") as f:  # nosec B310
+    with (
+        urllib.request.urlopen(req, timeout=timeout) as r,  # nosec B310
+        open(dest, "wb") as f,
+    ):
         ctype = r.headers.get("Content-Type", "")
         if on_headers is not None:
             on_headers(_content_length(r.headers.get("Content-Length")))
@@ -107,7 +140,9 @@ def _http_download(ctx, url, dest, timeout=180, accept=("tif",),
                 head = f.read(300).decode("utf-8", "replace")
         except OSError:
             head = ""
-        raise RemoteDemError(f"The service returned an error instead of elevation data: {head}")
+        raise RemoteDemError(
+            f"The service returned an error instead of elevation data: {head}"
+        )
 
 
 def _content_length(value):
@@ -140,13 +175,19 @@ def _download_with_retries(ctx, download, url, dest, **kwargs):
         try:
             return download(ctx, url, dest, **kwargs)
         except urllib.error.HTTPError as error:
-            if error.code not in _RETRYABLE_HTTP_CODES or attempt == _HTTP_RETRIES:
+            if (
+                error.code not in _RETRYABLE_HTTP_CODES
+                or attempt == _HTTP_RETRIES
+            ):
                 raise
-            retry_after = _content_length(error.headers.get("Retry-After") if error.headers else None)
+            retry_after = _content_length(
+                error.headers.get("Retry-After") if error.headers else None
+            )
             error.close()
-            delay = min(30, max(2 ** attempt, retry_after or 0))
+            delay = min(30, max(2**attempt, retry_after or 0))
             ctx.report(
-                f"DEM service returned HTTP {error.code}; retrying in {delay} s "
+                f"DEM service returned HTTP {error.code}; "
+                f"retrying in {delay} s "
                 f"({attempt + 1}/{_HTTP_RETRIES})…"
             )
             _wait_for_retry(ctx, delay)
@@ -164,41 +205,81 @@ class _DownloadConnections:
         self._connections = []
         self._lock = threading.Lock()
         proxies = urllib.request.getproxies()
-        self._use_urllib = any(proxies.get(key) for key in ("http", "https", "all"))
+        self._use_urllib = any(
+            proxies.get(key) for key in ("http", "https", "all")
+        )
 
-    def download(self, ctx, url, dest, timeout=180, _retry=True,
-                 on_headers=None, on_bytes=None):
+    def download(
+        self,
+        ctx,
+        url,
+        dest,
+        timeout=180,
+        _retry=True,
+        on_headers=None,
+        on_bytes=None,
+    ):
         if self._use_urllib:
-            return _http_download(ctx, url, dest, timeout=timeout,
-                                  on_headers=on_headers, on_bytes=on_bytes)
+            return _http_download(
+                ctx,
+                url,
+                dest,
+                timeout=timeout,
+                on_headers=on_headers,
+                on_bytes=on_bytes,
+            )
         parts = urllib.parse.urlsplit(url)
-        if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+        if (
+            parts.scheme != "https"
+            or not parts.hostname
+            or parts.username
+            or parts.password
+        ):
             raise RemoteDemError(f"Invalid URL: {url}")
         host = (parts.hostname, parts.port)
         connection = getattr(self._local, "connection", None)
         if connection is None or getattr(self._local, "host", None) != host:
             if connection is not None:
                 connection.close()
-            connection = http.client.HTTPSConnection(parts.hostname, parts.port, timeout=timeout)
+            connection = http.client.HTTPSConnection(
+                parts.hostname, parts.port, timeout=timeout
+            )
             self._local.connection = connection
             self._local.host = host
             with self._lock:
                 self._connections.append(connection)
-        path = urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, ""))
+        path = urllib.parse.urlunsplit(
+            ("", "", parts.path or "/", parts.query, "")
+        )
         try:
-            connection.request("GET", path, headers={"User-Agent": _USER_AGENT})
+            connection.request(
+                "GET", path, headers={"User-Agent": _USER_AGENT}
+            )
             response = connection.getresponse()
             if 300 <= response.status < 400:
                 response.read()
                 # Keep urllib's redirect behaviour for services that move.
-                return _http_download(ctx, url, dest, timeout=timeout,
-                                      on_headers=on_headers, on_bytes=on_bytes)
+                return _http_download(
+                    ctx,
+                    url,
+                    dest,
+                    timeout=timeout,
+                    on_headers=on_headers,
+                    on_bytes=on_bytes,
+                )
             if response.status >= 400:
-                raise urllib.error.HTTPError(url, response.status, response.reason,
-                                             response.headers, None)
+                raise urllib.error.HTTPError(
+                    url,
+                    response.status,
+                    response.reason,
+                    response.headers,
+                    None,
+                )
             ctype = response.getheader("Content-Type", "")
             if on_headers is not None:
-                on_headers(_content_length(response.getheader("Content-Length")))
+                on_headers(
+                    _content_length(response.getheader("Content-Length"))
+                )
             with open(dest, "wb") as output:
                 while True:
                     ctx.check()
@@ -208,15 +289,26 @@ class _DownloadConnections:
                     output.write(chunk)
                     if on_bytes is not None:
                         on_bytes(len(chunk))
-        except (http.client.RemoteDisconnected, http.client.CannotSendRequest,
-                ConnectionResetError, BrokenPipeError):
+        except (
+            http.client.RemoteDisconnected,
+            http.client.CannotSendRequest,
+            ConnectionResetError,
+            BrokenPipeError,
+        ):
             connection.close()
             self._local.connection = None
             if _retry:
                 # A server may close an idle keep-alive connection. GET can
                 # safely be sent once more on a fresh connection.
-                return self.download(ctx, url, dest, timeout=timeout, _retry=False,
-                                     on_headers=on_headers, on_bytes=on_bytes)
+                return self.download(
+                    ctx,
+                    url,
+                    dest,
+                    timeout=timeout,
+                    _retry=False,
+                    on_headers=on_headers,
+                    on_bytes=on_bytes,
+                )
             raise
         except BaseException:
             connection.close()
@@ -226,7 +318,9 @@ class _DownloadConnections:
             with open(dest, "rb") as source:
                 head = source.read(300).decode("utf-8", "replace")
             raise RemoteDemError(
-                f"The service returned an error instead of elevation data: {head}")
+                "The service returned an error instead of elevation data: "
+                f"{head}"
+            )
 
     def close(self):
         with self._lock:
@@ -236,18 +330,36 @@ class _DownloadConnections:
             connection.close()
 
 
-def _download_chunk(ctx, connections, url, dest, store=None, prefix=None,
-                    year=None, code=None, on_headers=None, on_bytes=None):
+def _download_chunk(
+    ctx,
+    connections,
+    url,
+    dest,
+    store=None,
+    prefix=None,
+    year=None,
+    code=None,
+    on_headers=None,
+    on_bytes=None,
+):
     """Download one independent chunk, publishing it atomically if kept."""
     incoming = store.incoming() if store is not None else None
     try:
-        part = os.path.join(incoming, os.path.basename(dest)) if incoming else dest
+        part = (
+            os.path.join(incoming, os.path.basename(dest))
+            if incoming
+            else dest
+        )
         if on_headers is None and on_bytes is None:
             _download_with_retries(ctx, connections.download, url, part)
         else:
             _download_with_retries(
-                ctx, connections.download, url, part,
-                on_headers=on_headers, on_bytes=on_bytes,
+                ctx,
+                connections.download,
+                url,
+                part,
+                on_headers=on_headers,
+                on_bytes=on_bytes,
             )
         if store is not None:
             return store.keep(prefix, year, code, part)
@@ -260,8 +372,12 @@ def _download_chunk(ctx, connections, url, dest, store=None, prefix=None,
 def snap_bbox(bbox, cell):
     """Grow bbox outwards onto the cell grid."""
     x0, y0, x1, y1 = bbox
-    return (math.floor(x0 / cell) * cell, math.floor(y0 / cell) * cell,
-            math.ceil(x1 / cell) * cell, math.ceil(y1 / cell) * cell)
+    return (
+        math.floor(x0 / cell) * cell,
+        math.floor(y0 / cell) * cell,
+        math.ceil(x1 / cell) * cell,
+        math.ceil(y1 / cell) * cell,
+    )
 
 
 def check_size(bbox, cell):
@@ -296,8 +412,12 @@ def _finish_mosaic(ctx, sources, out_dir, prefix, epsg, bbox=None):
         ctx.report(f"Reading elevation data… {int(complete * 100)}%")
         return 0 if ctx.cancelled() else 1
 
-    opts = dict(format="GTiff", creationOptions=["COMPRESS=DEFLATE", "TILED=YES", "BIGTIFF=IF_SAFER"],
-                outputSRS=f"EPSG:{epsg}", callback=_cb)
+    opts = dict(
+        format="GTiff",
+        creationOptions=["COMPRESS=DEFLATE", "TILED=YES", "BIGTIFF=IF_SAFER"],
+        outputSRS=f"EPSG:{epsg}",
+        callback=_cb,
+    )
     if bbox is not None:
         x0, y0, x1, y1 = bbox
         opts.update(projWin=[x0, y1, x1, y0])
@@ -310,7 +430,9 @@ def _finish_mosaic(ctx, sources, out_dir, prefix, epsg, bbox=None):
     valid = _valid_cells(band.ReadAsArray(), band.GetNoDataValue())
     out = None
     if not valid.any():
-        raise RemoteDemError("No elevation data for this area (outside the source coverage).")
+        raise RemoteDemError(
+            "No elevation data for this area (outside the source coverage)."
+        )
     return tif_path
 
 
@@ -324,7 +446,8 @@ def _valid_cells(arr, nodata):
 
 
 def _probe_ogc(ctx, spec, bbox, parts_dir):
-    """One coarse request over the whole area before the full-resolution chunks.
+    """One coarse request over the whole area before the
+    full-resolution chunks.
 
     Outside its coverage IGN still sends every chunk in full (16 MB of
     NoData each), so an area without data took as long as one with data.
@@ -340,7 +463,9 @@ def _probe_ogc(ctx, spec, bbox, parts_dir):
     w = max(1, int(math.ceil((x1 - x0) / scale)))
     h = max(1, int(math.ceil((y1 - y0) / scale)))
     ctx.report(f"Checking where {spec['label']} has data…")
-    url = spec["url"].format(layer=spec["layer"], x0=x0, y0=y0, x1=x1, y1=y1, w=w, h=h)
+    url = spec["url"].format(
+        layer=spec["layer"], x0=x0, y0=y0, x1=x1, y1=y1, w=w, h=h
+    )
     dest = os.path.join(parts_dir, "probe.tif")
     try:
         _download_with_retries(ctx, _http_download, url, dest)
@@ -356,7 +481,9 @@ def _probe_ogc(ctx, spec, bbox, parts_dir):
         ctx.check()  # but a cancel during it still stops the job
         return None
     if not valid.any():
-        raise RemoteDemError("No elevation data for this area (outside the source coverage).")
+        raise RemoteDemError(
+            "No elevation data for this area (outside the source coverage)."
+        )
     cell_x = (x1 - x0) / w
     cell_y = (y1 - y0) / h
 
@@ -432,10 +559,15 @@ class _OgcTransferProgress:
             known = sum(self.sizes.values())
             estimated = known * self.to_download / len(self.sizes)
             estimated = max(estimated, self.received)
-            exact = len(self.sizes) == self.to_download and self.received <= known
-            total_text = ("" if exact else "about ") + f"{estimated / 1e6:.1f} MB"
+            exact = (
+                len(self.sizes) == self.to_download and self.received <= known
+            )
+            total_text = (
+                "" if exact else "about "
+            ) + f"{estimated / 1e6:.1f} MB"
         self.ctx.report(
-            f"Fetching {self.label}… {self.reused + self.downloaded}/{self.total}\n"
+            f"Fetching {self.label}… "
+            f"{self.reused + self.downloaded}/{self.total}\n"
             f"DEM transfer: {self.received / 1e6:.1f} MB / {total_text}; "
             f"{self.downloaded}/{self.to_download} downloaded, "
             f"{self.reused} reused, {self.active} active."
@@ -463,7 +595,6 @@ def _fetch_ogc(ctx, spec, bbox, out_dir, store=None, kept=None):
     if spec.get("probe_px") and kept is None:
         empty = _probe_ogc(ctx, spec, (x0, y0, x1, y1), parts_dir)
     entries = []  # (cached path, url, destination, code), in mosaic order
-    n = len(columns) * len(rows)
     k = 0
     for row in rows:
         for column in columns:
@@ -472,7 +603,11 @@ def _fetch_ogc(ctx, spec, bbox, out_dir, store=None, kept=None):
             cx0, cx1 = column * step, (column + 1) * step
             cy0, cy1 = row * step, (row + 1) * step
             code = "{}_{}".format(column, row)
-            kept_path = store.find(spec["prefix"], None, code) if store is not None else None
+            kept_path = (
+                store.find(spec["prefix"], None, code)
+                if store is not None
+                else None
+            )
             if kept_path is not None:
                 store.reused += 1
                 entries.append((kept_path, None, None, code))
@@ -491,12 +626,20 @@ def _fetch_ogc(ctx, spec, bbox, out_dir, store=None, kept=None):
                 if cx0 >= cx1 or cy0 >= cy1:
                     continue
             url = spec["url"].format(
-                layer=spec["layer"], x0=cx0, y0=cy0, x1=cx1, y1=cy1,
-                w=int(round((cx1 - cx0) / cell)), h=int(round((cy1 - cy0) / cell)))
+                layer=spec["layer"],
+                x0=cx0,
+                y0=cy0,
+                x1=cx1,
+                y1=cy1,
+                w=int(round((cx1 - cx0) / cell)),
+                h=int(round((cy1 - cy0) / cell)),
+            )
             dest = os.path.join(parts_dir, f"part_{k:04d}.tif")
             entries.append((None, url, dest, code))
     if not entries:
-        raise RemoteDemError("No elevation data for this area (outside the source coverage).")
+        raise RemoteDemError(
+            "No elevation data for this area (outside the source coverage)."
+        )
     paths = [None] * len(entries)
     tasks = []
     for index, (cached, url, dest, code) in enumerate(entries):
@@ -504,7 +647,9 @@ def _fetch_ogc(ctx, spec, bbox, out_dir, store=None, kept=None):
             tasks.append((index, url, dest, code))
         else:
             paths[index] = cached
-    progress = _OgcTransferProgress(ctx, spec["label"], len(entries), len(entries) - len(tasks))
+    progress = _OgcTransferProgress(
+        ctx, spec["label"], len(entries), len(entries) - len(tasks)
+    )
     connections = _DownloadConnections()
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -519,9 +664,18 @@ def _fetch_ogc(ctx, spec, bbox, out_dir, store=None, kept=None):
                         break
                     progress.started()
                     future = executor.submit(
-                        _download_chunk, ctx, connections, url, dest, store,
-                        spec["prefix"], None, code,
-                        lambda size, index=index: progress.headers(index, size),
+                        _download_chunk,
+                        ctx,
+                        connections,
+                        url,
+                        dest,
+                        store,
+                        spec["prefix"],
+                        None,
+                        code,
+                        lambda size, index=index: progress.headers(
+                            index, size
+                        ),
                         progress.bytes,
                     )
                     pending[future] = index
@@ -542,7 +696,12 @@ def _fetch_ogc(ctx, spec, bbox, out_dir, store=None, kept=None):
     ctx.report("Combining…")
     # Cut to the area asked for (the chunks reach past it); the gaps NoData.
     return _finish_mosaic(
-        ctx, paths, out_dir, spec["prefix"], spec["epsg"], bbox=(x0, y0, x1, y1),
+        ctx,
+        paths,
+        out_dir,
+        spec["prefix"],
+        spec["epsg"],
+        bbox=(x0, y0, x1, y1),
     )
 
 
@@ -572,7 +731,9 @@ def _nz_tile_names(bbox):
             continue
         for c in range(c0, c1 + 1):
             if 0 <= c <= 99:
-                names.append(f"{_TOPO50_LETTERS[a]}{_TOPO50_LETTERS[b]}{c:02d}")
+                names.append(
+                    f"{_TOPO50_LETTERS[a]}{_TOPO50_LETTERS[b]}{c:02d}"
+                )
     return names
 
 
@@ -582,25 +743,35 @@ def gdal_has_lerc():
     Some builds lack LERC (for example the Flatpak QGIS).
     """
     from osgeo import gdal
+
     drv = gdal.GetDriverByName("GTiff")
-    opts = drv.GetMetadataItem("DMD_CREATIONOPTIONLIST") if drv is not None else None
+    opts = (
+        drv.GetMetadataItem("DMD_CREATIONOPTIONLIST")
+        if drv is not None
+        else None
+    )
     return bool(opts) and "<Value>LERC</Value>" in opts
 
 
 def _nz_available_tiles(ctx):
     """Tile names that exist, from the nationwide 1 m DEM collection.json."""
     ctx.report("Checking LINZ tile index…")
-    req = urllib.request.Request(_NZ_BASE + "collection.json",
-                                 headers={"User-Agent": _USER_AGENT})
+    req = urllib.request.Request(
+        _NZ_BASE + "collection.json", headers={"User-Agent": _USER_AGENT}
+    )
     with urllib.request.urlopen(req, timeout=60) as r:  # nosec B310
         col = json.loads(r.read().decode("utf-8"))
-    return {link["href"][2:-5] for link in col.get("links", [])
-            if link.get("rel") == "item" and link.get("href", "").startswith("./")}
+    return {
+        link["href"][2:-5]
+        for link in col.get("links", [])
+        if link.get("rel") == "item" and link.get("href", "").startswith("./")
+    }
 
 
 def _fetch_nzcog(ctx, spec, bbox, out_dir):
     """Read only the needed parts of the LINZ COG tiles and combine them."""
     from osgeo import gdal
+
     cell = spec["cell"]
     check_size(bbox, cell)
     bbox = snap_bbox(bbox, cell)
@@ -609,20 +780,32 @@ def _fetch_nzcog(ctx, spec, bbox, out_dir):
     wanted = _nz_tile_names(bbox)
     available = _nz_available_tiles(ctx)
     tiles = [n for n in wanted if n in available]
-    ctx.coverage_names = sorted(available)  # the whole list, for the coverage mesh
+    ctx.coverage_names = sorted(
+        available
+    )  # the whole list, for the coverage mesh
     if not tiles:
-        raise RemoteDemError("No elevation data for this area (outside the source coverage).")
+        raise RemoteDemError(
+            "No elevation data for this area (outside the source coverage)."
+        )
     ctx.check()
     # Partial reads of COGs on S3 (settings for this thread only).
-    gdal.SetThreadLocalConfigOption("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
-    gdal.SetThreadLocalConfigOption("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tiff,.tif")
+    gdal.SetThreadLocalConfigOption(
+        "GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR"
+    )
+    gdal.SetThreadLocalConfigOption(
+        "CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tiff,.tif"
+    )
     try:
         sources = [f"/vsicurl/{_NZ_BASE}{n}.tiff" for n in tiles]
         ctx.report(f"Reading {spec['label']} ({len(tiles)} tile(s))…")
-        return _finish_mosaic(ctx, sources, out_dir, spec["prefix"], spec["epsg"], bbox=bbox)
+        return _finish_mosaic(
+            ctx, sources, out_dir, spec["prefix"], spec["epsg"], bbox=bbox
+        )
     finally:
         gdal.SetThreadLocalConfigOption("GDAL_DISABLE_READDIR_ON_OPEN", None)
-        gdal.SetThreadLocalConfigOption("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", None)
+        gdal.SetThreadLocalConfigOption(
+            "CPL_VSIL_CURL_ALLOWED_EXTENSIONS", None
+        )
 
 
 def _de_tile_keys(bbox):
@@ -630,8 +813,12 @@ def _de_tile_keys(bbox):
     x0, y0, x1, y1 = bbox
     return [
         (east, north)
-        for north in range(int(math.floor(y0 / 1000)), int(math.floor((y1 - 1e-6) / 1000)) + 1)
-        for east in range(int(math.floor(x0 / 1000)), int(math.floor((x1 - 1e-6) / 1000)) + 1)
+        for north in range(
+            int(math.floor(y0 / 1000)), int(math.floor((y1 - 1e-6) / 1000)) + 1
+        )
+        for east in range(
+            int(math.floor(x0 / 1000)), int(math.floor((x1 - 1e-6) / 1000)) + 1
+        )
     ]
 
 
@@ -642,7 +829,8 @@ def _rlp_years(ctx):
     """
     ctx.report("Checking the Rhineland-Palatinate tile list…")
     req = urllib.request.Request(
-        _RLP_DGM1, headers={"User-Agent": _USER_AGENT, "Accept-Encoding": "gzip"}
+        _RLP_DGM1,
+        headers={"User-Agent": _USER_AGENT, "Accept-Encoding": "gzip"},
     )
     with urllib.request.urlopen(req, timeout=120) as r:  # nosec B310
         data = r.read()
@@ -650,9 +838,12 @@ def _rlp_years(ctx):
             data = gzip.decompress(data)
     ctx.check()
     years = {}
-    for east, north, year in set(re.findall(
-        r"dgm1_32_(\d+)_(\d+)_1_rp_(\d{4})\.tif", data.decode("utf-8", "replace")
-    )):
+    for east, north, year in set(
+        re.findall(
+            r"dgm1_32_(\d+)_(\d+)_1_rp_(\d{4})\.tif",
+            data.decode("utf-8", "replace"),
+        )
+    ):
         years.setdefault((int(east), int(north)), []).append(int(year))
     for tile_years in years.values():
         tile_years.sort(reverse=True)
@@ -662,6 +853,7 @@ def _rlp_years(ctx):
 def _tile_coverage(path):
     """Share of cells holding values in a downloaded tile."""
     from osgeo import gdal
+
     dataset = gdal.Open(path)
     if dataset is None:
         return 0.0
@@ -684,15 +876,27 @@ def _normalised_tile(path, epsg, cell, vrt_path):
     would be dropped or misplaced when combined.
     """
     from osgeo import gdal
+
     source = gdal.Open(path)
-    nodata = source.GetRasterBand(1).GetNoDataValue() if source is not None else None
+    nodata = (
+        source.GetRasterBand(1).GetNoDataValue()
+        if source is not None
+        else None
+    )
     source = None
     out = gdal.Warp(
-        vrt_path, path, format="VRT",
-        srcSRS=f"EPSG:{epsg}", dstSRS=f"EPSG:{epsg}",
-        srcNodata=nodata, dstNodata=-9999.0,
-        xRes=cell, yRes=cell, targetAlignedPixels=True,
-        resampleAlg="bilinear", outputType=gdal.GDT_Float32,
+        vrt_path,
+        path,
+        format="VRT",
+        srcSRS=f"EPSG:{epsg}",
+        dstSRS=f"EPSG:{epsg}",
+        srcNodata=nodata,
+        dstNodata=-9999.0,
+        xRes=cell,
+        yRes=cell,
+        targetAlignedPixels=True,
+        resampleAlg="bilinear",
+        outputType=gdal.GDT_Float32,
     )
     if out is None:
         raise RemoteDemError("Could not combine the downloaded tiles.")
@@ -701,7 +905,8 @@ def _normalised_tile(path, epsg, cell, vrt_path):
 
 
 def _prefetch_de_first(ctx, spec, wanted, urls, parts_dir, store):
-    """Fetch the newest tile of each square, without fetching unneeded years."""
+    ('Fetch the newest tile of each square, without fetching unneeded '
+     'years.')
     keys = sorted(wanted)
     results = {}
     connections = _DownloadConnections()
@@ -716,13 +921,23 @@ def _prefetch_de_first(ctx, spec, wanted, urls, parts_dir, store):
                     next_key += 1
                     year = wanted[key][0]
                     code = "{}_{}".format(*key)
-                    if store is not None and store.find(spec["prefix"], year, code):
+                    if store is not None and store.find(
+                        spec["prefix"], year, code
+                    ):
                         continue
                     url = urls(key)[0]
                     dest = os.path.join(parts_dir, url.rsplit("/", 1)[1])
                     future = executor.submit(
-                        _download_chunk, ctx, connections, url, dest, store,
-                        spec["prefix"], year, code)
+                        _download_chunk,
+                        ctx,
+                        connections,
+                        url,
+                        dest,
+                        store,
+                        spec["prefix"],
+                        year,
+                        code,
+                    )
                     pending.append((key, future))
                 if pending:
                     key, future = pending.popleft()
@@ -732,7 +947,9 @@ def _prefetch_de_first(ctx, spec, wanted, urls, parts_dir, store):
                         if error.code != 404:
                             raise
                         results[key] = None
-                    ctx.report(f"Fetching {spec['label']}… {len(results)}/{len(keys)}")
+                    ctx.report(
+                        f"Fetching {spec['label']}… {len(results)}/{len(keys)}"
+                    )
     finally:
         connections.close()
     return results
@@ -752,11 +969,18 @@ def _fetch_de_tiles(ctx, spec, bbox, out_dir, store=None, kept=None):
     listed = None
     if kept is not None:
         # The QLAE folder: the kept tiles and their years only.
-        wanted = {key: kept["{}_{}".format(*key)] for key in keys if "{}_{}".format(*key) in kept}
+        wanted = {
+            key: kept["{}_{}".format(*key)]
+            for key in keys
+            if "{}_{}".format(*key) in kept
+        }
 
         def urls(key):
             # Not fetched: only names for the work files, one per year.
-            return ["kept/{}_{}_{}.tif".format(key[0], key[1], year) for year in wanted[key]]
+            return [
+                "kept/{}_{}_{}.tif".format(key[0], key[1], year)
+                for year in wanted[key]
+            ]
     elif spec["state"] == "rlp":
         years = _rlp_years(ctx)
         listed = list(years)  # the whole state's tiles, for the coverage mesh
@@ -764,20 +988,27 @@ def _fetch_de_tiles(ctx, spec, bbox, out_dir, store=None, kept=None):
 
         def urls(key):
             east, north = key
-            return [f"{_RLP_DGM1}dgm1_32_{east}_{north}_1_rp_{year}.tif" for year in wanted[key]]
+            return [
+                f"{_RLP_DGM1}dgm1_32_{east}_{north}_1_rp_{year}.tif"
+                for year in wanted[key]
+            ]
     else:
         wanted = {key: [None] for key in keys}
 
         def urls(key):
             east, north = key
             return [f"{_BY_DGM1}{east}_{north}.tif"]
+
     if not wanted:
-        raise RemoteDemError("No elevation data for this area (outside the source coverage).")
+        raise RemoteDemError(
+            "No elevation data for this area (outside the source coverage)."
+        )
     parts_dir = os.path.join(out_dir, f"parts_{spec['prefix']}")
     os.makedirs(parts_dir, exist_ok=True)
     prefetched = (
         _prefetch_de_first(ctx, spec, wanted, urls, parts_dir, store)
-        if kept is None else {}
+        if kept is None
+        else {}
     )
     layered = []  # (priority, vrt path): the newest survey drawn last, on top
     survey_years = set()
@@ -788,44 +1019,62 @@ def _fetch_de_tiles(ctx, spec, bbox, out_dir, store=None, kept=None):
         for index, key in enumerate(sorted(wanted), start=1):
             ctx.check()
             ctx.report(f"Fetching {spec['label']}… {index}/{total}")
-            # The newest survey first; older ones only fill what it leaves empty.
+            # The newest survey first; older ones only fill what it leaves
+            # empty.
             for rank, url in enumerate(urls(key)):
                 name = url.rsplit("/", 1)[1]
                 code = "{}_{}".format(*key)
                 year = wanted[key][rank]
                 if rank == 0 and key in prefetched:
                     dest = prefetched[key]
-                    if dest is None:  # The newest listed tile was absent (404).
+                    if (
+                        dest is None
+                    ):  # The newest listed tile was absent (404).
                         continue
                     if store is not None:
                         store.downloaded += 1
                 else:
-                    dest = store.find(spec["prefix"], year, code) if store is not None else None
+                    dest = (
+                        store.find(spec["prefix"], year, code)
+                        if store is not None
+                        else None
+                    )
                     if dest is not None:
                         store.reused += 1
                     elif kept is not None:
                         continue
                     else:
                         # Downloaded on the store's disk, then moved in whole.
-                        incoming = store.incoming() if store is not None else parts_dir
+                        incoming = (
+                            store.incoming()
+                            if store is not None
+                            else parts_dir
+                        )
                         try:
                             dest = os.path.join(incoming, name)
                             try:
                                 fallback_connections.download(ctx, url, dest)
                             except urllib.error.HTTPError as error:
                                 if error.code == 404:
-                                    # A missing newest survey may have an older one.
+                                    # A missing newest survey may have an older
+                                    # one.
                                     continue
                                 raise
                             if store is not None:
-                                dest = store.keep(spec["prefix"], year, code, dest)
+                                dest = store.keep(
+                                    spec["prefix"], year, code, dest
+                                )
                                 store.downloaded += 1
                         finally:
                             if store is not None:
                                 store.drop_incoming(incoming)
                 found.add(key)
-                vrt = os.path.join(parts_dir, os.path.splitext(name)[0] + "_grid.vrt")
-                layered.append((rank, _normalised_tile(dest, spec["epsg"], cell, vrt)))
+                vrt = os.path.join(
+                    parts_dir, os.path.splitext(name)[0] + "_grid.vrt"
+                )
+                layered.append(
+                    (rank, _normalised_tile(dest, spec["epsg"], cell, vrt))
+                )
                 if wanted[key][rank] is not None:
                     survey_years.add(wanted[key][rank])
                 if _tile_coverage(dest) >= 0.999:
@@ -833,13 +1082,21 @@ def _fetch_de_tiles(ctx, spec, bbox, out_dir, store=None, kept=None):
     finally:
         fallback_connections.close()
     if not layered:
-        raise RemoteDemError("No elevation data for this area (outside the source coverage).")
+        raise RemoteDemError(
+            "No elevation data for this area (outside the source coverage)."
+        )
     # Later sources of a VRT are drawn over earlier ones: oldest first.
-    sources = [path for _rank, path in sorted(layered, key=lambda item: -item[0])]
+    sources = [
+        path for _rank, path in sorted(layered, key=lambda item: -item[0])
+    ]
     ctx.report("Combining…")
-    path = _finish_mosaic(ctx, sources, out_dir, spec["prefix"], spec["epsg"], bbox=bbox)
+    path = _finish_mosaic(
+        ctx, sources, out_dir, spec["prefix"], spec["epsg"], bbox=bbox
+    )
     info = {"credit": spec["credit"].format(year=datetime.date.today().year)}
-    if survey_years:  # Rhineland-Palatinate: the survey years in the file names
+    if (
+        survey_years
+    ):  # Rhineland-Palatinate: the survey years in the file names
         info["survey_years"] = sorted(survey_years)
     # For terrain/coverage.py (taken out before the facts are recorded).
     if listed is not None:
@@ -862,7 +1119,9 @@ def fetch_remote_dem(ctx, key, bbox, out_dir, store=None, kept=None):
     os.makedirs(out_dir, exist_ok=True)
     if spec["kind"] == "nzcog":
         path = _fetch_nzcog(ctx, spec, bbox, out_dir)
-        return path, {"_coverage_names": getattr(ctx, "coverage_names", None) or []}
+        return path, {
+            "_coverage_names": getattr(ctx, "coverage_names", None) or []
+        }
     if spec["kind"] == "de_tiles":
         return _fetch_de_tiles(ctx, spec, bbox, out_dir, store, kept)
     return _fetch_ogc(ctx, spec, bbox, out_dir, store, kept), {}

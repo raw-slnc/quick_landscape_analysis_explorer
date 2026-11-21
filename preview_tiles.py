@@ -58,11 +58,15 @@ def _param(source, key):
 def _estimated_zoom(extent, crs, pixels, zmin, zmax):
     """A first guess from the scale (QGIS picks the nearest resolution)."""
 
-    to_tiles = QgsCoordinateTransform(crs, _WEB_MERCATOR, QgsProject.instance())
+    to_tiles = QgsCoordinateTransform(
+        crs, _WEB_MERCATOR, QgsProject.instance()
+    )
     resolution = to_tiles.transformBoundingBox(extent).width() / pixels
     return min(
         range(zmin, zmax + 1),
-        key=lambda zoom: abs(_WEB_MERCATOR_WIDTH / (_TILE_SIZE * 2 ** zoom) - resolution),
+        key=lambda zoom: abs(
+            _WEB_MERCATOR_WIDTH / (_TILE_SIZE * 2**zoom) - resolution
+        ),
     )
 
 
@@ -119,22 +123,33 @@ class ExportZoomFinder(QObject):
         self._done = False
         source = layer.source()
         try:
-            if layer.crs() != _WEB_MERCATOR or extent.isEmpty() or paper_width_mm <= 0 or dpi <= 0:
+            if (
+                layer.crs() != _WEB_MERCATOR
+                or extent.isEmpty()
+                or paper_width_mm <= 0
+                or dpi <= 0
+            ):
                 raise ValueError("not a tile layer in Web Mercator")
             zmin = int(_param(source, "zmin") or 0)
             zmax = int(_param(source, "zmax") or 18)
             pixels = paper_width_mm / 25.4 * dpi
             guess = _estimated_zoom(extent, crs, pixels, zmin, zmax)
-        except Exception:  # noqa: BLE001 - any failure: draw the layer as it is
+        # any failure: draw the layer as it is
+        except Exception:  # noqa: BLE001
             self._candidates = None
             return
         # QGIS lands at or a little below the guess (see the module notes).
-        self._candidates = list(range(min(zmax, guess + 1), max(zmin, guess - 2) - 1, -1))
+        self._candidates = list(
+            range(min(zmax, guess + 1), max(zmin, guess - 2) - 1, -1)
+        )
         # The square has the export's metres per pixel.
         half = _PROBE_PIXELS / 2 * extent.width() / pixels
         centre = extent.center()
         self._probe = QgsRectangle(
-            centre.x() - half, centre.y() - half, centre.x() + half, centre.y() + half
+            centre.x() - half,
+            centre.y() - half,
+            centre.x() + half,
+            centre.y() + half,
         )
 
     def start(self):
@@ -171,7 +186,10 @@ class ExportZoomFinder(QObject):
             if copy is None:
                 continue
             self._copy = copy
-            self._run(copy, lambda image, zoom=zoom: self._candidate_drawn(zoom, image))
+            self._run(
+                copy,
+                lambda image, zoom=zoom: self._candidate_drawn(zoom, image),
+            )
             return
         self._finish(self._best[1] if self._best else None)
 
@@ -200,7 +218,9 @@ def fixed_zoom_copy(layer, zoom):
             source += "&{}={}".format(key, zoom)
         else:
             source = re.sub(
-                r"(^|&){}=[^&]*".format(key), r"\g<1>{}={}".format(key, zoom), source
+                r"(^|&){}=[^&]*".format(key),
+                r"\g<1>{}={}".format(key, zoom),
+                source,
             )
     copy = QgsRasterLayer(source, layer.name(), "wms")
     if not copy.isValid():

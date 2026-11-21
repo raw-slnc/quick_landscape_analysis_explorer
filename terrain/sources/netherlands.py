@@ -15,7 +15,8 @@ OPTION = {
         "Adds layers from Dutch open data (PDOK): the DEM in NAP colours, the "
         "slope on a local scale (prototype), the object height (trees and "
         "buildings), the BRO geomorphological map, the DSM, the DEM with its "
-        "holes filled and orthophotos for the base map. They are off at first.",
+        'holes filled and orthophotos for the base map. They are off at '
+        'first.',
         "オランダの公開データ（PDOK）のレイヤーを足します：段彩（NAP基準）、"
         "傾斜（範囲階調・試作）、地物の高さ（樹木・建物）、BRO 地形分類図、DSM、"
         "DEM（穴埋め）、ベースマップ用のオルソフォト。最初はオフです。",
@@ -35,8 +36,13 @@ GROUPS = [
             {
                 "key": "ahn_dtm",
                 "label": ("AHN4 DTM 0.5 m", "AHN4 DTM 0.5 m"),
-                "note": (("0.5 m", "0.5 m"),
-                         ("The PDOK service can be slow.", "PDOKのサービスは遅いことがあります。")),
+                "note": (
+                    ("0.5 m", "0.5 m"),
+                    (
+                        "The PDOK service can be slow.",
+                        "PDOKのサービスは遅いことがあります。",
+                    ),
+                ),
                 "facts": {
                     "provider": "Rijkswaterstaat / PDOK",
                     "dataset": "AHN4 DTM 0.5m",

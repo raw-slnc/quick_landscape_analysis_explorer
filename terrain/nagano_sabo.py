@@ -54,12 +54,14 @@ import os
 
 from .remote_zip import fetch_entry_bytes
 
-ROW_STEP = 2500     # 北方向, m/インデックス
-COL_STEP = 3000      # 東方向, m/インデックス
-BASE_NORTHING = 115000   # 行インデックス0の北端 (EPSG:6676)
-BASE_EASTING = -108000   # 列インデックス0の西端 (EPSG:6676)
+ROW_STEP = 2500  # 北方向, m/インデックス
+COL_STEP = 3000  # 東方向, m/インデックス
+BASE_NORTHING = 115000  # 行インデックス0の北端 (EPSG:6676)
+BASE_EASTING = -108000  # 列インデックス0の西端 (EPSG:6676)
 
-_INDEX_PATH = os.path.join(os.path.dirname(__file__), "data", "nagano_sabo_dem_index.json")
+_INDEX_PATH = os.path.join(
+    os.path.dirname(__file__), "data", "nagano_sabo_dem_index.json"
+)
 _index_cache = None
 
 
@@ -72,6 +74,7 @@ def _load_index():
 
 
 # ── タイルコード ⇔ 座標 ──────────────────────────────────────────────
+
 
 def _row_index(code_row: str) -> int:
     letter, digit = code_row[0], int(code_row[1:])
@@ -154,15 +157,19 @@ def _candidate_cities_by_proximity(code: str):
         return dr + dc
 
     boxes = _city_bboxes()
-    return [city for city, _ in sorted(boxes.items(), key=lambda kv: _dist(kv[1]))]
+    return [
+        city for city, _ in sorted(boxes.items(), key=lambda kv: _dist(kv[1]))
+    ]
 
 
 # ── 市町村境界タイルの合成 ────────────────────────────────────────────
+
 
 def _raster_valid_fraction(path):
     try:
         from osgeo import gdal
         import numpy as np
+
         ds = gdal.Open(path)
         if ds is None:
             return 0.0
@@ -220,8 +227,14 @@ def _merge_tile_parts(part_paths, out_path):
     merged[~merged_valid] = nodata
     tmp_path = out_path + ".tmp"
     drv = gdal.GetDriverByName("GTiff")
-    ds = drv.Create(tmp_path, cols, rows, 1, gdal.GDT_Float32,
-                    options=["COMPRESS=LZW", "TILED=YES"])
+    ds = drv.Create(
+        tmp_path,
+        cols,
+        rows,
+        1,
+        gdal.GDT_Float32,
+        options=["COMPRESS=LZW", "TILED=YES"],
+    )
     ds.SetGeoTransform(gt)
     ds.SetProjection(proj)
     out_band = ds.GetRasterBand(1)
@@ -235,7 +248,10 @@ def _merge_tile_parts(part_paths, out_path):
 
 # ── タイル取得（キャッシュ付き） ──────────────────────────────────────
 
-def download_tile_tif(code: str, out_dir: str, cancel_cb=None, progress_cb=None):
+
+def download_tile_tif(
+    code: str, out_dir: str, cancel_cb=None, progress_cb=None
+):
     """タイルコードに対応するGeoTIFFを取得しローカルパスを返す。
 
     索引(tile_to_cities)に直接該当があればそこを優先し、無ければ近傍の市町村を
@@ -255,7 +271,11 @@ def download_tile_tif(code: str, out_dir: str, cancel_cb=None, progress_cb=None)
     index = _load_index()
     indexed_cities = list(index["tile_to_cities"].get(code, []))
     if os.path.isfile(tif_cache):
-        if len(indexed_cities) <= 1 or os.path.isfile(sources_cache) or _raster_valid_fraction(tif_cache) >= 0.98:
+        if (
+            len(indexed_cities) <= 1
+            or os.path.isfile(sources_cache)
+            or _raster_valid_fraction(tif_cache) >= 0.98
+        ):
             return tif_cache
 
     if indexed_cities:
@@ -278,16 +298,22 @@ def download_tile_tif(code: str, out_dir: str, cancel_cb=None, progress_cb=None)
 
             def _relay(phase, info, _city=city):
                 if progress_cb:
-                    detail = (info[1], info[2]) if phase == "downloading" else info
+                    detail = (
+                        (info[1], info[2]) if phase == "downloading" else info
+                    )
                     progress_cb(phase, _city, detail)
 
-            data = fetch_entry_bytes(url, f"{code}.tif", progress_cb=_relay, cancel_cb=cancel_cb)
+            data = fetch_entry_bytes(
+                url, f"{code}.tif", progress_cb=_relay, cancel_cb=cancel_cb
+            )
             if data is not None:
                 if not indexed_cities:
                     with open(tif_cache, "wb") as fh:
                         fh.write(data)
                     return tif_cache
-                part_path = os.path.join(out_dir, f".{code}.part{len(part_paths)}.tif")
+                part_path = os.path.join(
+                    out_dir, f".{code}.part{len(part_paths)}.tif"
+                )
                 with open(part_path, "wb") as fh:
                     fh.write(data)
                 part_paths.append(part_path)
@@ -299,12 +325,17 @@ def download_tile_tif(code: str, out_dir: str, cancel_cb=None, progress_cb=None)
         try:
             _merge_tile_parts(part_paths, tif_cache)
             with open(sources_cache, "w", encoding="utf-8") as fh:
-                json.dump({
-                    "code": code,
-                    "indexed_cities": indexed_cities,
-                    "sources": used_sources,
-                    "valid_fraction": _raster_valid_fraction(tif_cache),
-                }, fh, ensure_ascii=False, indent=2)
+                json.dump(
+                    {
+                        "code": code,
+                        "indexed_cities": indexed_cities,
+                        "sources": used_sources,
+                        "valid_fraction": _raster_valid_fraction(tif_cache),
+                    },
+                    fh,
+                    ensure_ascii=False,
+                    indent=2,
+                )
         finally:
             for part_path in part_paths:
                 try:

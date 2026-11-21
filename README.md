@@ -23,11 +23,32 @@ same terms.
 - Layers: layers kept in QGIS as survey information.
 - Print layout: terrain information as a temporary record.
 
-Avid Maps Extra is one such field map app: a PWA made by the author of this
-plugin (overview page in English, app in Japanese). The link at the bottom
-right of the window opens its overview page. With the GeoPDF, it can also
-use `dem_for_geopdf.tif` (see "DEM for the GeoPDF" below) to show the
-terrain in 3D.
+**Maps4QGIS** is the bundled desktop map based on Avid Maps Extra. The link at
+the bottom right opens it directly when no analysis is being managed. The map
+chooses English or Japanese from the browser language. In its Specs tab, you
+can choose Auto, English, or Japanese.
+The QGIS Plugins menu also has **Maps4QGIS from QLAE** to open the desktop map
+directly without opening the QLAE window or preparing an analysis ZIP.
+
+While managing an analysis, click **Maps4QGIS** to make
+a GeoPDF of the current preview with the selected paper size and resolution.
+The PDF is placed in the analysis ZIP and in
+`<project>/quick_landscape_analysis/exports/<analysis name>/geopdf.pdf`.
+The browser then opens the bundled map app with an operation guide. Click
+`▤` (Map Library), click Start import, select `geopdf.pdf` from the analysis
+ZIP list, click Choose a DEM, select `dem_for_geopdf.tif`, choose the conversion
+quality, and click Convert. The PDF and DEM file choices blink when each picker
+opens. The app also offers Open another file for unrelated PDFs or DEMs.
+`案内なしで開く` starts the same desktop app without making a GeoPDF or showing
+the analysis guide. The local desktop app and the online/mobile PWA have
+separate browser storage. To use the map on a phone, move the PDF and DEM to
+the phone or your cloud storage and import them there. The PDF is in the
+exports folder above. `dem_for_geopdf.tif` is in the analysis ZIP; clicking
+`Layers` writes it to the same exports folder. In the mobile PWA, select the
+GeoPDF and then select that DEM separately.
+After a guided import, the map is saved in the browser. The final guide lets
+you export a backup for recovery or finish without exporting one. You can turn
+off future backup reminders there and turn them back on in Specs.
 
 ## Window
 
@@ -255,6 +276,8 @@ terrain in 3D.
     layers in the layer panel's order, at the extent of the export, also
     without the plugin's window. For a group of files in an exports folder
     whose record is missing, the item is shown greyed out.
+    If the analysis ZIP contains a GeoPDF made by Maps4QGIS, it is copied
+    to the same exports folder, but is never added to the QGIS layer panel.
   - DEM for the GeoPDF: the analysis ZIP also holds `dem_for_geopdf.tif`,
     written out with the layers (not added as a layer). It is a DEM over
     about the same area as the GeoPDF: the preview with a margin. It is made:

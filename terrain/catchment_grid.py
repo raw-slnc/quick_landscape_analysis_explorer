@@ -19,7 +19,8 @@ do_cum.c, do_cum_mfd), written again here:
    avoid artifacts along edges).
 3. Streams, upstream cells first: the drainage direction of a cell is the
    neighbour further down with the most flow, leaving out the cells next to
-   NoData (the routing's next cell when nothing else is left). A stream starts where the flow
+   NoData (the routing's next cell when nothing else is left).
+   A stream starts where the flow
    reaches the threshold (the smallest catchment), if no higher neighbour
    already has that much flow, no neighbour is already a stream and the cell
    is not flat; it goes on along the drainage directions. Streams are cut
@@ -94,7 +95,9 @@ def basin_labels(z, threshold, convergence, context):
     for dy in (-1, 0, 1):
         for dx in (-1, 0, 1):
             if dy or dx:
-                near_invalid |= np.roll(np.roll(invalid, dy, axis=0), dx, axis=1)
+                near_invalid |= np.roll(
+                    np.roll(invalid, dy, axis=0), dx, axis=1
+                )
     edge_grid = valid_grid & near_invalid
     seeds = np.flatnonzero(edge_grid)
     edge = bytearray(edge_grid.ravel().astype(np.uint8).tobytes())
@@ -102,9 +105,27 @@ def basin_labels(z, threshold, convergence, context):
     root2 = math.sqrt(2.0)
     if _NEIGHBOUR_ORDER == "grass":
         # S, N, W, E, NE, SW, SE, NW (r.watershed's nextdr / nextdc)
-        steps = ((1, 0), (-1, 0), (0, -1), (0, 1), (-1, 1), (1, -1), (1, 1), (-1, -1))
+        steps = (
+            (1, 0),
+            (-1, 0),
+            (0, -1),
+            (0, 1),
+            (-1, 1),
+            (1, -1),
+            (1, 1),
+            (-1, -1),
+        )
     else:
-        steps = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
+        steps = (
+            (-1, -1),
+            (-1, 0),
+            (-1, 1),
+            (0, -1),
+            (0, 1),
+            (1, -1),
+            (1, 0),
+            (1, 1),
+        )
     neighbours = tuple(
         (dy * width + dx, root2 if dy and dx else 1.0) for dy, dx in steps
     )
@@ -112,7 +133,9 @@ def basin_labels(z, threshold, convergence, context):
     valid = bytearray(valid_grid.ravel().astype(np.uint8).tobytes())
     if _ELEVATION_STEP:
         finite = np.isfinite(heights)
-        heights[finite] = np.round(heights[finite] / _ELEVATION_STEP) * _ELEVATION_STEP
+        heights[finite] = (
+            np.round(heights[finite] / _ELEVATION_STEP) * _ELEVATION_STEP
+        )
     raw = array("d", heights.ravel().tolist())
     parent = array("i", [-1]) * size
 
@@ -134,8 +157,11 @@ def basin_labels(z, threshold, convergence, context):
         order.append(cell)
         if len(order) % step == 0:
             context.check()
-            context.report("Catchments: routing the flow… {}%".format(
-                min(99, 100 * len(order) // total)))
+            context.report(
+                "Catchments: routing the flow… {}%".format(
+                    min(99, 100 * len(order) // total)
+                )
+            )
         for offset, _distance in neighbours:
             other = cell + offset
             if seen[other]:
@@ -151,7 +177,9 @@ def basin_labels(z, threshold, convergence, context):
     # Visiting position of each cell (-1 for NoData): a smaller position is
     # further down the way out.
     rank_grid = np.full(size, -1, dtype=np.int32)
-    rank_grid[np.frombuffer(order, dtype=np.int32)] = np.arange(len(order), dtype=np.int32)
+    rank_grid[np.frombuffer(order, dtype=np.int32)] = np.arange(
+        len(order), dtype=np.int32
+    )
     rank = array("i")
     rank.frombytes(rank_grid.tobytes())
     del rank_grid
@@ -164,8 +192,11 @@ def basin_labels(z, threshold, convergence, context):
         done += 1
         if done % step == 0:
             context.check()
-            context.report("Catchments: accumulating the flow (MFD)… {}%".format(
-                min(99, 100 * done // total)))
+            context.report(
+                "Catchments: accumulating the flow (MFD)… {}%".format(
+                    min(99, 100 * done // total)
+                )
+            )
         if edge[cell]:
             continue
         height = raw[cell]
@@ -212,8 +243,11 @@ def basin_labels(z, threshold, convergence, context):
         done += 1
         if done % step == 0:
             context.check()
-            context.report("Catchments: finding the streams… {}%".format(
-                min(99, 100 * done // total)))
+            context.report(
+                "Catchments: finding the streams… {}%".format(
+                    min(99, 100 * done // total)
+                )
+            )
         stream = is_stream[cell]
         if not edge[cell]:
             height = raw[cell]
@@ -241,8 +275,13 @@ def basin_labels(z, threshold, convergence, context):
                     if accumulation[other] > best_flow:
                         best, best_flow = other, accumulation[other]
             downstream[cell] = best
-            if (not stream and accumulation[cell] + 0.5 >= threshold
-                    and not higher_stream and not beside_stream and not flat):
+            if (
+                not stream
+                and accumulation[cell] + 0.5 >= threshold
+                and not higher_stream
+                and not beside_stream
+                and not flat
+            ):
                 stream = 1
         if stream:
             is_stream[cell] = 1

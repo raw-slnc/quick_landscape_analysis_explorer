@@ -2,7 +2,8 @@
 """Keyboard focus in the window.
 
 Tab goes through the controls in the order of the layouts (round from the
-last to the first): the left panel from top left to bottom right, then the right panel box by box (a box from
+last to the first): the left panel from top left to bottom right,
+then the right panel box by box (a box from
 top to bottom before the next, so the two columns of "2. DEM" and
 "3. Analysis" are not crossed back and forth). Worked out at each press, so
 controls shown, hidden, greyed or swapped (analysis management) are
@@ -84,10 +85,15 @@ def chain(window, skip=(), after=()):
     follows = {}
     for moved, anchor in after:
         follows.setdefault(anchor, []).append(moved)
-    state = {"moved": {moved for moved, _anchor in after}, "released": set(), "follows": follows}
+    state = {
+        "moved": {moved for moved, _anchor in after},
+        "released": set(),
+        "follows": follows,
+    }
     _walk(window, found, set(skip), state)
     return [
-        widget for widget in found
+        widget
+        for widget in found
         if widget is not window and widget.isVisible() and widget.isEnabled()
     ]
 
@@ -100,13 +106,21 @@ def move(window, forward, skip=(), after=()):
     if not controls:
         return False
     current = window.focusWidget()
-    while current is not None and current not in controls and current is not window:
+    while (
+        current is not None
+        and current not in controls
+        and current is not window
+    ):
         current = current.parentWidget()
     if current in controls:
         index = controls.index(current) + (1 if forward else -1)
     else:
         index = 0 if forward else -1
-    reason = Qt.FocusReason.TabFocusReason if forward else Qt.FocusReason.BacktabFocusReason
+    reason = (
+        Qt.FocusReason.TabFocusReason
+        if forward
+        else Qt.FocusReason.BacktabFocusReason
+    )
     # Round from the last to the first (and back with Shift+Tab).
     controls[index % len(controls)].setFocus(reason)
     return True
@@ -135,7 +149,9 @@ class ControlKeys(QObject):
         kind = event.type()
         if isinstance(watched, QLabel):
             return self._label_event(watched, event)
-        if kind != QEvent.Type.KeyPress or not isinstance(watched, QAbstractButton):
+        if kind != QEvent.Type.KeyPress or not isinstance(
+            watched, QAbstractButton
+        ):
             return False
         if event.key() in _ARROWS:
             return not isinstance(watched, QRadioButton)
@@ -152,17 +168,23 @@ class ControlKeys(QObject):
     @staticmethod
     def _label_event(label, event):
         kind = event.type()
-        if kind == QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+        if kind == QEvent.Type.KeyPress and event.key() in (
+            Qt.Key.Key_Tab,
+            Qt.Key.Key_Backtab,
+        ):
             forward = event.key() == Qt.Key.Key_Tab and not (
                 event.modifiers() & Qt.KeyboardModifier.ShiftModifier
             )
             label.window().focusNextPrevChild(forward)
             return True
         if kind == QEvent.Type.FocusIn and event.reason() in (
-            Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason
+            Qt.FocusReason.TabFocusReason,
+            Qt.FocusReason.BacktabFocusReason,
         ):
             # Choose the link (drawn as chosen; Enter opens it).
-            label.focusNextPrevChild(event.reason() == Qt.FocusReason.TabFocusReason)
+            label.focusNextPrevChild(
+                event.reason() == Qt.FocusReason.TabFocusReason
+            )
         return False
 
     def watch(self, window):
@@ -174,6 +196,9 @@ class ControlKeys(QObject):
             if isinstance(button, QPushButton) and not button.isDefault():
                 button.setAutoDefault(False)
         for label in window.findChildren(QLabel):
-            if label.textInteractionFlags() & Qt.TextInteractionFlag.LinksAccessibleByKeyboard:
+            if (
+                label.textInteractionFlags()
+                & Qt.TextInteractionFlag.LinksAccessibleByKeyboard
+            ):
                 label.removeEventFilter(self)
                 label.installEventFilter(self)

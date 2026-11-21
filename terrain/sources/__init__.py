@@ -36,7 +36,8 @@ A country file has:
                module is there. Its run(folder, info, context) writes its
                files into ``folder`` (regional/<key>/ in the analysis ZIP;
                info: "outputs", the basic analysis's members, "root",
-               the folder they are in, and "folder_member") and returns {"layers": [{"name": (English,
+               the folder they are in, and "folder_member") and returns
+               {"layers": [{"name": (English,
                Japanese), "member", "style", "visible", optionally "role":
                "base_map" or "excludes": a basic output it is shown
                instead of}], "credit": (English,
@@ -55,10 +56,14 @@ COUNTRIES = (local, japan, netherlands, france, germany, new_zealand, world)
 
 SOURCES = {
     source["key"]: dict(source, country=country.CODE)
-    for country in COUNTRIES for group in country.GROUPS for source in group["sources"]
+    for country in COUNTRIES
+    for group in country.GROUPS
+    for source in group["sources"]
 }
 
-COUNTRY_NAMES = {country.CODE: country.NAME for country in COUNTRIES if country.CODE}
+COUNTRY_NAMES = {
+    country.CODE: country.NAME for country in COUNTRIES if country.CODE
+}
 
 
 def get(key):
@@ -80,7 +85,10 @@ def regional_option(code):
         option = getattr(country, "OPTION", None)
         if country.CODE != code or not option:
             continue
-        if importlib.util.find_spec("{}.{}".format(__name__, option["route"])) is None:
+        if (
+            importlib.util.find_spec("{}.{}".format(__name__, option["route"]))
+            is None
+        ):
             return None
         return option
     return None
@@ -98,7 +106,8 @@ def option_by_key(key):
         if option and option["key"] == key:
             try:
                 return option, __import__(
-                    "{}.{}".format(__name__, option["route"]), fromlist=["run"])
+                    "{}.{}".format(__name__, option["route"]), fromlist=["run"]
+                )
             except ImportError:
                 return option, None
     return None, None

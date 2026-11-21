@@ -3,8 +3,19 @@
 
 from qgis.PyQt import sip
 from qgis.PyQt.QtCore import pyqtSignal
-from qgis.PyQt.QtWidgets import QComboBox, QHBoxLayout, QLabel, QToolButton, QWidget
-from qgis.core import QgsApplication, QgsLayerTreeGroup, QgsMapLayerModel, QgsProject
+from qgis.PyQt.QtWidgets import (
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QToolButton,
+    QWidget,
+)
+from qgis.core import (
+    QgsApplication,
+    QgsLayerTreeGroup,
+    QgsMapLayerModel,
+    QgsProject,
+)
 
 from .i18n import tr
 
@@ -65,7 +76,9 @@ class LayerTreeOrderComboBox(QComboBox):
         if self._allowEmptyLayer:
             self.addItem("", None)
         for layer in layers:
-            self.addItem(QgsMapLayerModel.iconForLayer(layer), layer.name(), layer.id())
+            self.addItem(
+                QgsMapLayerModel.iconForLayer(layer), layer.name(), layer.id()
+            )
         index = self.findData(current_id)
         if index >= 0:
             self.setCurrentIndex(index)
@@ -126,10 +139,13 @@ class LayerVisibilityButton(QToolButton):
         self.setToolTip(
             tr(
                 "Turns the layer on or off in the QGIS layer panel while this "
-                "window is in front of the QGIS main window (turning it on also "
-                "turns on its groups); back in the main window, the layer panel "
+                'window is in front of the QGIS main window (turning it '
+                'on also '
+                'turns on its groups); back in the main window, the '
+                'layer panel '
                 "is as before. Going to another application changes nothing. "
-                "A layer is on when chosen; the choice is kept in the project. "
+                'A layer is on when chosen; the choice is kept in the '
+                'project. '
                 "Only layers that are on are drawn in the preview.",
                 "このウィンドウがQGISのメインウィンドウより前にある間、レイヤーパネルで"
                 "レイヤーの表示をオン／オフします（オンにすると親グループもオン）。"
@@ -195,8 +211,10 @@ class LayerVisibilityButton(QToolButton):
         if sip.isdeleted(self):
             return
         node = self._node()
-        on = self._wanted if self._wanted is not None else (
-            node is not None and node.isVisible()
+        on = (
+            self._wanted
+            if self._wanted is not None
+            else (node is not None and node.isVisible())
         )
         self.setEnabled(node is not None)
         self.blockSignals(True)
@@ -204,7 +222,9 @@ class LayerVisibilityButton(QToolButton):
         self.blockSignals(False)
         self.setIcon(
             QgsApplication.getThemeIcon(
-                "/mActionShowAllLayers.svg" if on else "/mActionHideAllLayers.svg"
+                "/mActionShowAllLayers.svg"
+                if on
+                else "/mActionHideAllLayers.svg"
             )
         )
 
@@ -214,7 +234,11 @@ class LayerVisibilityButton(QToolButton):
         del args
         if sip.isdeleted(self):
             return
-        if self._applied and not LayerVisibilityButton._changingNow and self._wanted is not None:
+        if (
+            self._applied
+            and not LayerVisibilityButton._changingNow
+            and self._wanted is not None
+        ):
             node = self._node()
             if node is not None and node.isVisible() != self._wanted:
                 # The user turned it on or off in the layer panel while the
@@ -249,8 +273,12 @@ class LayerVisibilityButton(QToolButton):
             if self._wanted:
                 items = [node]
                 parent = node.parent()
-                # The root (the only node without a parent) is not a group to check.
-                while isinstance(parent, QgsLayerTreeGroup) and parent.parent() is not None:
+                # The root (the only node without a parent) is not a group to
+                # check.
+                while (
+                    isinstance(parent, QgsLayerTreeGroup)
+                    and parent.parent() is not None
+                ):
                     items.append(parent)
                     parent = parent.parent()
                 for item in items:

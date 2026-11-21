@@ -15,12 +15,20 @@ record. It is shown:
 import json
 import os
 
-from qgis.core import QgsCoordinateReferenceSystem, QgsLayerTreeGroup, QgsRectangle
+from qgis.core import (
+    QgsCoordinateReferenceSystem,
+    QgsLayerTreeGroup,
+    QgsRectangle,
+)
 
 from .core import packages
 from .i18n import tr
 
-_EXPORTS_PART = os.sep + os.path.join(packages.ROOT_FOLDER, packages.EXPORTS_FOLDER) + os.sep
+_EXPORTS_PART = (
+    os.sep
+    + os.path.join(packages.ROOT_FOLDER, packages.EXPORTS_FOLDER)
+    + os.sep
+)
 
 
 def _file_path(layer):
@@ -34,7 +42,9 @@ def group_record(group):
     if not isinstance(group, QgsLayerTreeGroup):
         return None, None
     paths = [
-        _file_path(node.layer()) for node in group.findLayers() if node.layer() is not None
+        _file_path(node.layer())
+        for node in group.findLayers()
+        if node.layer() is not None
     ]
     paths = [path for path in paths if path]
     if not paths:
@@ -55,13 +65,19 @@ class ExportedGroupMenu:
     def __init__(self, iface):
         self.iface = iface
         self.view = iface.layerTreeView() if iface is not None else None
-        if self.view is not None and hasattr(self.view, "contextMenuAboutToShow"):
+        if self.view is not None and hasattr(
+            self.view, "contextMenuAboutToShow"
+        ):
             self.view.contextMenuAboutToShow.connect(self._about_to_show)
 
     def unload(self):
-        if self.view is not None and hasattr(self.view, "contextMenuAboutToShow"):
+        if self.view is not None and hasattr(
+            self.view, "contextMenuAboutToShow"
+        ):
             try:
-                self.view.contextMenuAboutToShow.disconnect(self._about_to_show)
+                self.view.contextMenuAboutToShow.disconnect(
+                    self._about_to_show
+                )
             except (TypeError, RuntimeError):
                 pass
         self.view = None
@@ -73,14 +89,19 @@ class ExportedGroupMenu:
             return
         menu.addSeparator()
         if state == "ok":
-            action = menu.addAction(tr("Make print layout", "印刷レイアウトを作成"))
+            action = menu.addAction(
+                tr("Make print layout", "印刷レイアウトを作成")
+            )
             action.triggered.connect(
                 lambda _checked=False, g=group, r=record: self._make(g, r)
             )
         else:
-            action = menu.addAction(tr(
-                "Make print layout (no record)", "印刷レイアウトを作成（記録がありません）"
-            ))
+            action = menu.addAction(
+                tr(
+                    "Make print layout (no record)",
+                    "印刷レイアウトを作成（記録がありません）",
+                )
+            )
             action.setEnabled(False)
 
     def _make(self, group, record_path):
@@ -97,12 +118,19 @@ class ExportedGroupMenu:
         except (OSError, ValueError, KeyError, TypeError) as error:
             bar.pushMessage(
                 tr("Print layout", "印刷レイアウト"),
-                tr("The record could not be read: {}", "記録を読めませんでした：{}").format(error),
+                tr(
+                    "The record could not be read: {}",
+                    "記録を読めませんでした：{}",
+                ).format(error),
                 Qgis.MessageLevel.Warning,
             )
             return
         # The layers of the group only, top to bottom as in the layer panel.
-        layers = [node.layer() for node in group.findLayers() if node.layer() is not None]
+        layers = [
+            node.layer()
+            for node in group.findLayers()
+            if node.layer() is not None
+        ]
         status = make_print_layout(
             self.iface.mainWindow(),
             self.iface,
@@ -118,6 +146,7 @@ class ExportedGroupMenu:
         )
         if status:
             bar.pushMessage(
-                tr("Print layout", "印刷レイアウト"), status.split("\n", 1)[0],
+                tr("Print layout", "印刷レイアウト"),
+                status.split("\n", 1)[0],
                 Qgis.MessageLevel.Info,
             )

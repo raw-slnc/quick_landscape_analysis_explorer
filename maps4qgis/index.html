@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Maps4QGIS</title>
+  <script>
+    (() => {
+      let chosen = null;
+      try { chosen = localStorage.getItem('maps4qgis.language'); } catch (_) {}
+      const browserLanguage = (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
+      const language = chosen === 'ja' || chosen === 'en'
+        ? chosen : (browserLanguage.toLowerCase().startsWith('ja') ? 'ja' : 'en');
+      location.replace(`app-${language}.html${location.search}${location.hash}`);
+    })();
+  </script>
+</head>
+<body>
+  <a href="app-en.html">English</a> · <a href="app-ja.html">日本語</a>
+</body>
+</html>

@@ -18,15 +18,30 @@ from ..terrain import coverage
 
 
 def main(keys):
-    folder = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                          "terrain", "data", "coverage")
+    folder = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "terrain",
+        "data",
+        "coverage",
+    )
     for key in keys or coverage.GRIDS:
         started = time.time()
-        grid = coverage.build(key, progress=lambda done: print("  {} tiles".format(done), flush=True))
+        grid = coverage.build(
+            key,
+            progress=lambda done: print("  {} tiles".format(done), flush=True),
+        )
         path = coverage.save(grid, folder)
-        print("{}: {} tiles, grid {} x {}, date {}, {} bytes, {:.0f} s".format(
-            key, grid.count, grid.mask.shape[1], grid.mask.shape[0], grid.date,
-            os.path.getsize(path), time.time() - started))
+        print(
+            "{}: {} tiles, grid {} x {}, date {}, {} bytes, {:.0f} s".format(
+                key,
+                grid.count,
+                grid.mask.shape[1],
+                grid.mask.shape[0],
+                grid.date,
+                os.path.getsize(path),
+                time.time() - started,
+            )
+        )
 
 
 if __name__ == "__main__":

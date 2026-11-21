@@ -70,7 +70,9 @@ def surface_cells(frame_cells):
         return 0
     width = math.sqrt(frame_cells * A_SERIES_RATIO)
     height = frame_cells / width
-    return (width + 2 * SURFACE_MARGIN_CELLS) * (height + 2 * SURFACE_MARGIN_CELLS)
+    return (width + 2 * SURFACE_MARGIN_CELLS) * (
+        height + 2 * SURFACE_MARGIN_CELLS
+    )
 
 
 def step_need(outputs, surface, acquired):
@@ -107,6 +109,7 @@ def too_much(need):
 
 # Linux (also inside Flatpak, where /proc shows the PC's memory).
 
+
 def _linux_system():
     values = {}
     with open("/proc/meminfo", encoding="ascii") as handle:
@@ -128,6 +131,7 @@ def _linux_process():
 
 
 # Windows (kernel32 through ctypes; no administrator rights needed).
+
 
 class _MemoryStatusEx(ctypes.Structure):
     _fields_ = [
@@ -172,12 +176,15 @@ def _windows_process():
     kernel32 = ctypes.windll.kernel32
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     kernel32.K32GetProcessMemoryInfo.argtypes = [
-        wintypes.HANDLE, ctypes.POINTER(_ProcessMemoryCounters), wintypes.DWORD,
+        wintypes.HANDLE,
+        ctypes.POINTER(_ProcessMemoryCounters),
+        wintypes.DWORD,
     ]
     counters = _ProcessMemoryCounters()
     counters.cb = ctypes.sizeof(_ProcessMemoryCounters)
     if not kernel32.K32GetProcessMemoryInfo(
-            kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
+        kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb
+    ):
         return None
     return int(counters.WorkingSetSize)
 
@@ -246,8 +253,16 @@ def _mac_libc():
 def _mac_sysctl_uint64(name):
     value = ctypes.c_uint64(0)
     size = ctypes.c_size_t(ctypes.sizeof(value))
-    if _mac_libc().sysctlbyname(
-            name.encode("ascii"), ctypes.byref(value), ctypes.byref(size), None, 0) != 0:
+    if (
+        _mac_libc().sysctlbyname(
+            name.encode("ascii"),
+            ctypes.byref(value),
+            ctypes.byref(size),
+            None,
+            0,
+        )
+        != 0
+    ):
         return None
     return int(value.value)
 
@@ -264,12 +279,20 @@ def _mac_system():
         return None
     stats = _VmStatistics64()
     count = ctypes.c_uint(ctypes.sizeof(_VmStatistics64) // 4)
-    if libc.host_statistics64(
-            host, _HOST_VM_INFO64, ctypes.byref(stats), ctypes.byref(count)) != 0:
+    if (
+        libc.host_statistics64(
+            host, _HOST_VM_INFO64, ctypes.byref(stats), ctypes.byref(count)
+        )
+        != 0
+    ):
         return None
     # Free, plus pages macOS gives up at once when asked.
-    pages = (stats.free_count + stats.inactive_count
-             + stats.speculative_count + stats.purgeable_count)
+    pages = (
+        stats.free_count
+        + stats.inactive_count
+        + stats.speculative_count
+        + stats.purgeable_count
+    )
     return total, min(total, pages * page.value)
 
 
@@ -278,7 +301,14 @@ def _mac_process():
     task = ctypes.c_uint.in_dll(libc, "mach_task_self_").value
     info = _MachTaskBasicInfo()
     count = ctypes.c_uint(ctypes.sizeof(_MachTaskBasicInfo) // 4)
-    if libc.task_info(
-            task, _MACH_TASK_BASIC_INFO, ctypes.byref(info), ctypes.byref(count)) != 0:
+    if (
+        libc.task_info(
+            task,
+            _MACH_TASK_BASIC_INFO,
+            ctypes.byref(info),
+            ctypes.byref(count),
+        )
+        != 0
+    ):
         return None
     return int(info.resident_size)
