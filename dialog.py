@@ -1139,10 +1139,9 @@ class LandscapeExplorerDialog(QDialog):
         )
         self.paperSizeCombo.setToolTip(
             tr(
-                'Paper size. The preview shows this sheet reduced; the '
-                'GeoPDF and the '
-                "image use it.",
-                "紙の大きさ。プレビューはこの紙の縮小表示で、GeoPDFと画像もこの大きさで作ります。",
+                "Changing the paper size changes the paper scale. "
+                "The GeoPDF and image use the selected size.",
+                "Aサイズを変えると紙面縮尺が変わります。GeoPDFと画像にも選んだ大きさを使います。",
             )
         )
         status_layout.addWidget(self.previewStatusLabel, 1)
@@ -4740,15 +4739,15 @@ class LandscapeExplorerDialog(QDialog):
         managing = self._in_management()
         self.paperSizeCombo.setToolTip(
             tr(
-                "Changing the paper size changes the exported map's scale; "
+                "Changing the paper size changes the paper scale; "
                 "the saved analysis area and raster resolution stay the same.",
-                "Aサイズを変えると出力地図の縮尺が変わります。保存済みの解析範囲とラスタの解像度は変わりません。",
+                "Aサイズを変えると紙面縮尺が変わります。保存済みの解析範囲とラスタの解像度は変わりません。",
             )
             if managing
             else tr(
-                "Paper size. The preview shows this sheet reduced; the "
-                "GeoPDF and the image use it.",
-                "紙の大きさ。プレビューはこの紙の縮小表示で、GeoPDFと画像もこの大きさで作ります。",
+                "Changing the paper size changes the paper scale. "
+                "The GeoPDF and image use the selected size.",
+                "Aサイズを変えると紙面縮尺が変わります。GeoPDFと画像にも選んだ大きさを使います。",
             )
         )
         if managing:
@@ -5380,12 +5379,9 @@ class LandscapeExplorerDialog(QDialog):
             # The scale is proportional to the magnification; correct for a
             # magnification QGIS could not go down to.
             scale *= desired / actual
-        label = (
-            tr("Paper scale 1:{:,.0f}", "紙面縮尺 1:{:,.0f}")
-            if self._in_management()
-            else tr("Scale 1:{:,.0f}", "縮尺 1:{:,.0f}")
+        self.previewStatusLabel.setText(
+            tr("Paper scale 1:{:,.0f}", "紙面縮尺 1:{:,.0f}").format(scale)
         )
-        self.previewStatusLabel.setText(label.format(scale))
 
     def _restore_preview_view(self, state):
         crs = QgsCoordinateReferenceSystem(state.get("preview_crs", ""))
