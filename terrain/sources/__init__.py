@@ -40,8 +40,11 @@ A country file has:
                {"layers": [{"name": (English,
                Japanese), "member", "style", "visible", optionally "role":
                "base_map" or "excludes": a basic output it is shown
-               instead of}], "credit": (English,
+               instead of, or a role of its own made exclusive in
+               management_panel.EXCLUSIVE_OUTPUTS}], "credit": (English,
                Japanese)}; the plugin puts the layers in a group of their own
+    sources    optional: the DEM source keys it is made for; with another
+               source the check is greyed (absent: any source)
     geopdf_fill_holes  True: the DEM for the GeoPDF starts from the DEM
                with its holes filled from around them (the region's stage;
                the later stages are the same everywhere)

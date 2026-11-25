@@ -1158,7 +1158,7 @@
               <li>The DEM must be a single-band GeoTIFF representing bare-earth elevation in meters. DSM, CHM, canopy-height data, hillshade images, and contour-line images are not treated as DEM.</li>
               <li>Compressed GeoTIFF, BigTIFF, and multi-band DEM are not supported at this stage. Export an uncompressed single-band GeoTIFF from QGIS.</li>
               <li>If NoData or missing cells are present inside the PDF extent, the 3D terrain may be incomplete or visually unnatural.</li>
-              <li>Alternatively, a DEM can be fetched automatically from GSI elevation tiles (online only). Each point uses DEM1A (1 m), DEM5A (5 m) or DEM10B (10 m), whichever is the finest available. Areas with no data in any of them are treated as sea (0 m) when they adjoin low ground; enclosed inland gaps are interpolated. Supported for GeoPDFs in Japan Plane Rectangular CS or JGD2011 lat/lng. Only if GSI tiles cannot be fetched, alternatives are offered depending on the reason: retry, coarser GSI 10 m, AWS Terrarium (low accuracy, reference only), a GeoTIFF file, or 2D-only import. For maps outside Japan (other coordinate systems), the choices are AWS Terrarium, a GeoTIFF file, or 2D-only import; the AWS DEM is made in WGS 84 lat/lng. A GeoTIFF DEM in WGS 84 lat/lng can be used with a map in any coordinate system.</li>
+              <li>Alternatively, a DEM can be fetched automatically from GSI elevation tiles (online only). Each point uses DEM1A (1 m), DEM5A (5 m) or DEM10B (10 m), whichever is the finest available. Areas with no data in any of them are treated as sea (0 m) when they adjoin low ground; enclosed inland gaps are interpolated. Supported for maps in Japan: in the map's CRS for GeoPDFs in Japan Plane Rectangular CS or JGD2011 lat/lng, and in JGD2011 lat/lng for maps in other CRSs (such as Web Mercator). Only if GSI tiles cannot be fetched, alternatives are offered depending on the reason: retry, coarser GSI 10 m, AWS Terrarium (low accuracy, reference only), a GeoTIFF file, or 2D-only import. For maps outside Japan, the choices are AWS Terrarium, a GeoTIFF file, or 2D-only import; the AWS DEM is made in WGS 84 lat/lng. A GeoTIFF DEM in WGS 84 lat/lng can be used with a map in any coordinate system.</li>
             </ul>
           </section>
           <section class="drawer-section" style="margin-top:14px;">
@@ -1192,7 +1192,7 @@
               <li>DEMは地表面標高をメートル単位で示す単一バンドGeoTIFFを対象とします。DSM、CHM、樹冠高、陰影図、等高線画像はDEMとして扱いません。</li>
               <li>現段階では、圧縮GeoTIFF、BigTIFF、複数バンドDEMは未対応です。QGISから非圧縮の単一バンドGeoTIFFとして出力してください。</li>
               <li>PDF範囲内にNoDataや欠損セルが多い場合、3D地形が欠ける、または不自然に表示されることがあります。</li>
-              <li>DEMは国土地理院の標高タイルから自動取得することもできます（オンライン時のみ）。地点ごとに DEM1A（1m）→ DEM5A（5m）→ DEM10B（10m）の順で、値のある最も細かいものを使います。どれにも値がない部分は、低地に接していれば海（0m）とし、内陸の小さな欠測は周囲から補間します。対象は平面直角座標系またはJGD2011緯度経度のGeoPDFです。地理院から取得できなかったときだけ、理由に応じて「再試行」「地理院10mを粗く取得」「AWS Terrarium（精度低・参考用）」「GeoTIFFを指定」「DEMなし（2D）」の選択肢を表示します。日本国外の座標系の地図では「AWS Terrarium」「GeoTIFFを指定」「DEMなし（2D）」から選べ、AWS のDEMは WGS84 緯度経度で作ります。緯度経度（WGS84）のGeoTIFFのDEMは、どの座標系の地図にも使えます。</li>
+              <li>DEMは国土地理院の標高タイルから自動取得することもできます（オンライン時のみ）。地点ごとに DEM1A（1m）→ DEM5A（5m）→ DEM10B（10m）の順で、値のある最も細かいものを使います。どれにも値がない部分は、低地に接していれば海（0m）とし、内陸の小さな欠測は周囲から補間します。対象は日本の地図です。平面直角座標系またはJGD2011緯度経度のGeoPDFはその座標系で、それ以外の座標系（Webメルカトルなど）の地図はJGD2011緯度経度でDEMを作ります。地理院から取得できなかったときだけ、理由に応じて「再試行」「地理院10mを粗く取得」「AWS Terrarium（精度低・参考用）」「GeoTIFFを指定」「DEMなし（2D）」の選択肢を表示します。日本の外の地図では「AWS Terrarium」「GeoTIFFを指定」「DEMなし（2D）」から選べ、AWS のDEMは WGS84 緯度経度で作ります。緯度経度（WGS84）のGeoTIFFのDEMは、どの座標系の地図にも使えます。</li>
             </ul>
           </section>
           <section class="drawer-section" style="margin-top:14px;">
@@ -2997,6 +2997,14 @@
       });
     }
 
+    // 変換が終わった後、取込画面のメッセージ（DEM・測地系・メルカトルなど）を読めるよう、
+    // 文の長さに合わせた時間（約1.9〜7.5 秒）待ってから閉じる
+    function waitForImportMessage() {
+      const text = document.getElementById('importFlowProgress')?.textContent || '';
+      const ms = Math.min(7500, Math.max(1875, 1125 + text.length * 22.5));
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
     function closeImportFlowModal() {
       const modal = document.getElementById('importFlowModal');
       modal.classList.remove('visible');
@@ -4690,6 +4698,9 @@
       const foreignCrs = (epsg && !japanCrs) || (!epsg && usesWktCrs(geoPdfMetadata));
       if (foreignCrs) {
         if (providerKey === 'terrarium') return 4326;
+        // 日本の中の地図なら、日本の座標系でなくても（Webメルカトル EPSG:3857 など）地理院を使える。
+        // DEMを緯度経度（JGD2011）で作れば、地図の座標系に関係なく4隅の緯度経度で合わせられる
+        if (isLatLngNearJapan(center)) return 6668;
         throw new AutoDemError('crs', `This map uses a coordinate system outside Japan${epsg ? ` (EPSG:${epsg})` : ''}. GSI elevation tiles cover Japan only.`);
       }
       if (japanCrs) return epsg;
@@ -5439,9 +5450,76 @@
       return demMetadata.modelType === 2 || Boolean(demMetadata.geographicEpsg && !demMetadata.projectedEpsg);
     }
 
-    // DEMの座標1単位あたりのメートル。平面直角座標系は1、緯度経度はその緯度での1度の長さ
+    // メルカトルの地図か（Web メルカトルを含む）。メルカトルの座標の1単位は、地上では緯度によって短くなる
+    // （赤道で1、緯度φでおよそ cosφ。日本で約0.82、オランダで約0.62）。地図の中心の緯度で直す。
+    // spherical：Web メルカトル（球の式を楕円体の緯度経度に当てたもの。EPSG:3857 など、ESRI の Mercator_Auxiliary_Sphere）。
+    // それ以外のメルカトル（EPSG:3395、Mercator_1SP・Mercator_2SP）は楕円体の式（縮尺係数 k0）
+    const SPHERICAL_MERCATOR_EPSG = new Set([3857, 3785, 900913, 102100, 102113]);
+    function getMercatorInfo(demMetadata) {
+      if (!demMetadata) return null;
+      const wkt = demMetadata.crsWkt || '';
+      const projection = ((wkt.match(/PROJECTION\[\s*"([^"]+)"/) || [])[1] || '').toLowerCase();
+      const epsg = Number(demMetadata.epsg);
+      const spherical = SPHERICAL_MERCATOR_EPSG.has(epsg)
+        || projection === 'mercator_auxiliary_sphere'
+        || projection === 'popular_visualisation_pseudo_mercator';
+      const ellipsoidal = !spherical
+        && (epsg === 3395 || ['mercator', 'mercator_1sp', 'mercator_2sp'].includes(projection));
+      if (!spherical && !ellipsoidal) return null;
+      const datum = wkt ? parseWktDatum(wkt) : null;
+      const a = datum && Number.isFinite(datum.a) && datum.a > 0 ? datum.a : 6378137;
+      const rf = datum && datum.rf > 0 ? datum.rf : 298.257223563;
+      const flattening = 1 / rf;
+      const e2 = flattening * (2 - flattening);
+      const unit = wkt ? wktLinearUnit(wkt) : 1;
+      const has = name => new RegExp(`PARAMETER\\[\\s*"${name}"`, 'i').test(wkt);
+      let k0 = 1;
+      if (ellipsoidal && has('standard_parallel_1')) {
+        const parallel = wktParameter(wkt, 'standard_parallel_1') * Math.PI / 180;
+        k0 = Math.cos(parallel) / Math.sqrt(1 - e2 * Math.sin(parallel) ** 2);
+      } else if (ellipsoidal && has('scale_factor')) {
+        k0 = wktParameter(wkt, 'scale_factor') || 1;
+      }
+      return { spherical, a, e2, unit, k0, falseNorthing: wkt ? wktParameter(wkt, 'false_northing') : 0 };
+    }
+
+    // メルカトルの北の座標から緯度（ラジアン）
+    function mercatorLatitude(info, northing) {
+      const y = (northing - info.falseNorthing) * info.unit;
+      if (info.spherical) return 2 * Math.atan(Math.exp(y / info.a)) - Math.PI / 2;
+      const e = Math.sqrt(info.e2);
+      const t = Math.exp(-y / (info.a * info.k0));
+      let phi = Math.PI / 2 - 2 * Math.atan(t);
+      for (let i = 0; i < 10; i += 1) {
+        const sin = e * Math.sin(phi);
+        phi = Math.PI / 2 - 2 * Math.atan(t * Math.pow((1 - sin) / (1 + sin), e / 2));
+      }
+      return phi;
+    }
+
+    // メルカトルの座標1単位あたりの、地上（楕円体の上）のメートル
+    function mercatorMetersPerUnit(info, northing) {
+      const phi = mercatorLatitude(info, northing);
+      const sin2 = Math.sin(phi) ** 2;
+      const cos = Math.cos(phi);
+      const w = Math.sqrt(1 - info.e2 * sin2);
+      if (info.spherical) {
+        // 東西：卯酉線の半径 N で cosφ、南北：子午線の半径 M。座標は半径 a の球の式で cosφ 倍に伸びている
+        const n = info.a / w;
+        const m = info.a * (1 - info.e2) / (w * w * w);
+        return { x: info.unit * n * cos / info.a, y: info.unit * m * cos / info.a };
+      }
+      // 楕円体のメルカトルは等角：縮尺は東西・南北とも k0 × √(1 − e²sin²φ) ／ cosφ
+      const scale = info.k0 * w / cos;
+      return { x: info.unit / scale, y: info.unit / scale };
+    }
+
+    // DEMの座標1単位あたりのメートル。平面直角座標系は1、緯度経度はその緯度での1度の長さ、
+    // メルカトルはその北の座標（centerLat に北の座標が来る）の緯度での地上の長さ
     function getMetersPerCrsUnit(demMetadata, centerLat) {
       if (!isGeographicDem(demMetadata)) {
+        const mercator = getMercatorInfo(demMetadata);
+        if (mercator && Number.isFinite(centerLat)) return mercatorMetersPerUnit(mercator, centerLat);
         // 投影座標はWKTの長さの単位（米国の州平面座標のフィートなど）。WKTの無い日本の座標系はメートル
         const unit = demMetadata && demMetadata.crsWkt ? wktLinearUnit(demMetadata.crsWkt) : 1;
         return { x: unit, y: unit };
@@ -7228,7 +7306,17 @@
     }
 
     // 取込完了の表示に添える、測地系の変換の結果
+    // 取込完了の表示に添える、メルカトルの地図への一言（3D の縮尺は getMetersPerCrsUnit で中心の緯度に合わせる）
+    function describeMercator(record) {
+      if (!getMercatorInfo({ epsg: record.crsEpsg, crsWkt: record.crsWkt || '' })) return '';
+      return ' メルカトルの地図です。3D表示の大きさは地図の中心の緯度で地上の長さに直しています（広い地図の端では少しずれます）。現地で距離を読む地図には、その地域の座標系（UTMなど）を勧めます。';
+    }
+
     function describeDatumConversion(record) {
+      return describeDatumOnly(record) + describeMercator(record);
+    }
+
+    function describeDatumOnly(record) {
       const name = record.datumName ? `（${record.datumName}）` : '';
       if (record.datumStatus === 'shift') {
         const accuracy = Number.isFinite(record.datumAccuracy) ? `（変換の精度 約${record.datumAccuracy} m）` : '';
@@ -7316,7 +7404,7 @@
           if (source.provider === 'terrarium') {
             const notes = source.notes.length ? ` (${source.notes.join(', ')})` : '';
             const accuracy = source.lowAccuracy ? ' Low-accuracy DEM for reference only.' : '';
-            showImportProgress(`${profile.completionMessage} DEM fetched automatically: ${source.summary}${notes}. Source: ${source.attribution.replace('（', ' (').replace('）', ')')}.${accuracy}`);
+            showImportProgress(`${profile.completionMessage} DEM fetched automatically: ${source.summary}${notes}. Source: ${source.attribution.replace('（', ' (').replace('）', ')')}.${accuracy}${describeDatumConversion(record)}`);
           } else {
             const notes = source.notes.length ? `（${source.notes.join('、')}）` : '';
             const accuracy = source.lowAccuracy ? ' 精度が低い参考用のDEMです。' : '';
@@ -7329,6 +7417,7 @@
         }
         await activateStoredMapById(record.id);
         setSelectedGeoPdfFile(null);
+        await waitForImportMessage();
         endImportFlow({ keepProgress: true });
         if (maps4qgisSession && maps4qgisStep !== 'done') {
           maps4qgisStep = backupGuideSkipped() ? 'done' : 'backup-choice';

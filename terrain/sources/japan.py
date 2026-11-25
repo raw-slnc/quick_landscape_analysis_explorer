@@ -19,6 +19,32 @@ _GSI_FACTS = {
 }
 _NAGANO = ("Nagano", "長野県")
 
+OPTION = {
+    "key": "japan_regional",
+    "label": ("CS Valley, valley flow", "CS Valley・沢の成立"),
+    "tooltip": (
+        "Adds the CS Valley (prototype) at two gates (High, Low): "
+        "the CS Map with only what it colours as valleys kept (streams, "
+        "springs, hollows), the rest faint; and the valley flow "
+        "(prototype): how much water gathers along the valleys (MFD), in "
+        "light blue, to see which hollows have become streams. "
+        "Made from the DEM; they are off at first. With VIRTUAL SHIZUOKA, "
+        "GSI DEM1A 1 m and the Nagano 0.5 m "
+        "DEMs only.",
+        "CS Valley（試作）をゲート高・低の2種類で足します：CS立体図のうち"
+        "沢・湧水・窪地など凹んで見える所だけを残し、ほかは薄くしたものです。"
+        "あわせて沢の成立（試作）：谷に集まる水の量（MFD）を水色で示し、"
+        "凹みが沢として成り立っているかを見ます。DEMから作ります。"
+        "最初はオフです。"
+        "VIRTUAL SHIZUOKA、国土地理院 DEM1A 1 m、長野県の 0.5 m DEM の"
+        "ときだけ使えます。",
+    ),
+    "route": "japan_regional",
+    # The DEM sources it is made for (the fine ones: VIRTUAL SHIZUOKA, GSI
+    # 1 m, Nagano 0.5 m); with another source the check is greyed.
+    "sources": ("vs_lp", "gsi:1m", "nagano_sabo", "nagano_rinmu"),
+}
+
 GROUPS = [
     {
         "label": (

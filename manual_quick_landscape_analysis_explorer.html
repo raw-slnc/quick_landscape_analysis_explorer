@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quick Landscape Analysis Explorer Manual</title>
+  <style>
+    :root {
+      --bg: #f4f7f1;
+      --panel: #fdfefb;
+      --ink: #2b302a;
+      --muted: #5c6b57;
+      --line: #d3e0cd;
+      --accent: #4a7c4e;
+      --accent-soft: #e8f0e8;
+      --note-line: #e6c800;
+      --note-bg: #fffbe6;
+    }
+    body {
+      margin: 0;
+      font-family: "Noto Sans JP", "Yu Gothic", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.65;
+    }
+    main { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; }
+    header {
+      margin-bottom: 28px;
+      padding: 16px 4px 20px;
+      border-bottom: 2px solid var(--accent);
+      display: flex;
+      align-items: flex-start;
+      gap: 20px;
+    }
+    header .header-text { flex: 1; }
+    h1, h2, h3 { margin: 0 0 12px; line-height: 1.25; }
+    h1 { font-size: 2rem; color: #2d5a30; }
+    h2 { font-size: 1.35rem; padding-left: 12px; border-left: 4px solid var(--accent); color: #2d5a30; }
+    h3 { font-size: 1.02rem; margin-top: 22px; padding-top: 10px; border-top: 1px solid var(--line); }
+    section { margin-bottom: 2.5em; }
+    .muted { color: var(--muted); margin-top: 10px; }
+    .note {
+      padding: 10px 14px;
+      border-left: 3px solid var(--note-line);
+      background: var(--note-bg);
+      margin-top: 14px;
+    }
+    code {
+      padding: 0.14em 0.46em;
+      border-radius: 7px;
+      background: #eef3ea;
+      font-family: "Cascadia Code", "Consolas", monospace;
+      font-size: 0.95em;
+    }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.96rem; }
+    th, td { border: 1px solid var(--line); padding: 9px 10px; vertical-align: top; text-align: left; }
+    th { background: var(--accent-soft); width: 28%; }
+    table.grid th { width: auto; }
+    ul, ol { margin: 10px 0 0 18px; padding: 0; }
+    li + li { margin-top: 4px; }
+    .toc { columns: 2; margin-top: 6px; }
+    .toc li { break-inside: avoid; }
+    .lang-btn {
+      flex-shrink: 0;
+      padding: 6px 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #eef3ea;
+      cursor: pointer;
+      font-size: 0.9rem;
+      color: var(--ink);
+    }
+    .lang-btn:hover { background: var(--accent-soft); }
+
+    /* 考え方の3点 */
+    .points { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 14px; }
+    .point {
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+    }
+    .point b { display: block; margin-bottom: 6px; color: #2d5a30; }
+    .swatch { display: inline-block; width: 1em; height: 1em; margin-right: 0.35em; vertical-align: -0.12em; border: 1px solid #bbb; }
+    .country {
+      margin-top: 16px;
+      padding: 12px 16px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+    }
+    .country h3 { margin-top: 0; padding-top: 0; border-top: 0; }
+    @media (max-width: 760px) {
+      .points { grid-template-columns: 1fr; }
+      .toc { columns: 1; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="header-text">
+        <h1>Quick Landscape Analysis Explorer</h1>
+        <p class="muted" data-ja>Quick Landscape Analysis Explorer（QLAE）は、DEM から地形の図（陰影起伏・傾斜・CS立体図・等高線・流域範囲図）を作り、現地への持ち出しや資料に合わせた形で書き出す QGIS プラグインです。</p>
+        <p class="muted" data-en>Quick Landscape Analysis Explorer (QLAE) is a QGIS plugin that makes terrain maps (hillshade, slope, CS Map, contours, catchments) from a DEM and exports them in the form each task needs, for the field or for documents.</p>
+      </div>
+      <button class="lang-btn" onclick="toggleLang()">EN / 日本語</button>
+    </header>
+
+    <!-- ===== 日本語 ===== -->
+    <div id="content-ja">
+
+      <nav>
+        <ol class="toc">
+          <li><a href="#ja-purpose">目的と使い方</a></li>
+          <li><a href="#ja-preview">プレビューの操作</a></li>
+          <li><a href="#ja-export">4つのエクスポートと解像度</a></li>
+          <li><a href="#ja-dem">DEM の設定と対応する取得元</a></li>
+          <li><a href="#ja-area">解析範囲</a></li>
+          <li><a href="#ja-reuse">DEM の再利用</a></li>
+          <li><a href="#ja-basic">基本解析</a></li>
+          <li><a href="#ja-crs">Maps4QGIS で開くときの座標系</a></li>
+          <li><a href="#ja-maps">Maps4QGIS の操作</a></li>
+          <li><a href="#ja-avid">Avid Maps について</a></li>
+          <li><a href="#ja-regional">地域解析</a></li>
+          <li><a href="#ja-about">このプラグインについて</a></li>
+        </ol>
+      </nav>
+
+      <section id="ja-purpose">
+        <h2>1. 目的と使い方</h2>
+        <p>QLAE は地形の下見（踏査の前に、ある範囲の地形を DEM から素早く読むこと）のためのプラグインです。傾斜の区分・流域の大きさ・等高線の間隔は、森林の地形を読む目的で固定しています。別の範囲の図どうしを同じ条件で比べ、現地でも同じ見方で確かめられるようにするためです。</p>
+        <div class="points">
+          <div class="point"><b>A判の紙面で作る</b>プレビューは A 判の紙面です。解析も書き出しも、この紙面の枠に合わせます。</div>
+          <div class="point"><b>1つの解析を1つの ZIP に</b>解析はプロジェクトの隣に ZIP で保存します。後から読み込み直し、別の形で書き出せます。</div>
+          <div class="point"><b>用途に合わせて書き出す</b>現地用の GeoPDF、資料用の画像、QGIS に残すレイヤー、一時的な記録の印刷レイアウト。</div>
+        </div>
+        <h3>基本の流れ</h3>
+        <ol>
+          <li>QGIS プロジェクトを保存します（解析はプロジェクトのフォルダの <code>quick_landscape_analysis/</code> に保存します）。</li>
+          <li>プラグインの窓を開き、左のプレビューを解析したい場所へ動かします。</li>
+          <li>「1. 範囲」でポリゴンレイヤーか「画面の範囲を使用」を選びます。</li>
+          <li>「2. DEM」で取得元を選びます。</li>
+          <li>「3. 解析」で作る図にチェックを入れます（チェックは次に開いたときも覚えています）。</li>
+          <li>解析名を入れて（空欄なら実行した時刻）、「4. 実行」の「実行」を押します。</li>
+          <li>終わると右側が「解析管理」に変わります。見せるレイヤーを選び、書き出します。</li>
+        </ol>
+        <div class="note">同じ解析名では実行できません（解析は上書きしません）。保存した解析は「解析結果」の一覧から読み込めます。</div>
+      </section>
+
+      <section id="ja-preview">
+        <h2>2. プレビューの操作</h2>
+        <table>
+          <tr><th>移動・拡大縮小</th><td>ドラッグで移動、ホイールで拡大縮小（「地図操作（1）」）。縮小は、地球全体が紙面の幅か高さに収まる所までです。</td></tr>
+          <tr><th>中心スナップ</th><td>プレビューの中心から 45 px 以内では赤い十字がマウスに付き、15 px 以内で中心に吸い付きます。その状態のホイールは中心を基準に拡大縮小するので、紙面の中心が動きません。</td></tr>
+          <tr><th>ポリゴン選択（2）</th><td>解析範囲のポリゴンを選びます。クリックで選択、ドラッグで範囲選択、Shift で追加、Ctrl で選択または解除。「ポリゴン選択を解除」で外します。</td></tr>
+          <tr><th>QGIS との受け渡し</th><td>最初の表示は QGIS のメイン地図に合わせます。その後はプレビューだけで動かせます。ボタンで、メイン地図から中心・座標系・縮尺を取り直すことと、メイン地図をプレビューの範囲に合わせることができます。</td></tr>
+          <tr><th>用紙</th><td>A5〜A0 と縦・横を選べます。用紙を変えると紙面縮尺が変わります。GeoPDF と画像も、選んだ用紙の大きさで書き出します。</td></tr>
+          <tr><th>ベースマップ・オーバーレイ</th><td>プレビューの下で、プロジェクトのレイヤーから選びます。QGIS のスタイルのまま描きます。ベースマップは解析の下、オーバーレイは解析の上です。</td></tr>
+          <tr><th>窓の上の表示</th><td>「国 - 地域：緯度, 経度」。選んだ DEM 取得元の国・地域（ローカル DEM や全世界の取得元では、QGIS の世界地図による中心の国）と、プレビューの中心（WGS84）です。</td></tr>
+        </table>
+      </section>
+
+      <section id="ja-export">
+        <h2>3. 4つのエクスポートと解像度</h2>
+        <p>解析管理の「エクスポート」から書き出します。GeoPDF・画像・印刷レイアウトはプレビューに見えているとおりに描き、レイヤーは見え方によらず解析のすべてのレイヤーを書き出します。</p>
+        <table>
+          <tr><th>GeoPDF</th><td>現地調査用。GeoPDF を読む現地地図アプリで開きます。裏で作り、レイヤーは GeoPDF のレイヤーとして残ります。保存先は選べます。</td></tr>
+          <tr><th>画像</th><td>QGIS の外の資料用。PNG・JPEG・TIFF をワールドファイル付きで、用紙の大きさで書き出します。ボタンが今の形式を示し、右のボタンで形式を切り替えます。</td></tr>
+          <tr><th>レイヤー</th><td>QGIS に残す調査情報。解析のレイヤーをスタイル（.qml）付きで <code>&lt;プロジェクト&gt;/quick_landscape_analysis/exports/&lt;解析名&gt;/</code> に書き出し、普通のレイヤーとしてグループに置きます。印刷レイアウトの記録（<code>qlae_layout.json</code>）も書くので、レイヤーパネルでそのグループを右クリックし「印刷レイアウトを作成」で、プラグインの窓なしにレイアウトを作れます。GeoPDF 用の DEM（<code>dem_for_geopdf.tif</code>）と、Maps4QGIS で作った GeoPDF も同じフォルダに書き出します（レイヤーには置きません）。</td></tr>
+          <tr><th>印刷レイアウト</th><td>一時的な記録。「Quick Landscape Analysis Explorer」という名前のレイアウトを1つ作り、作るたびに置き換えます。</td></tr>
+        </table>
+        <h3>解像度</h3>
+        <ul>
+          <li>GeoPDF と画像はそれぞれ解像度を選べます：96・150・200・300・600 dpi と「カスタム…」（1〜3000 dpi）。初期値は GeoPDF 300 dpi、画像 200 dpi。GeoPDF の解像度は、陰影起伏やベースマップなど画像の部分の細かさです。</li>
+          <li>一覧の「*」は処理上限の目安です。用紙ごとに、1枚の画像が 6,000 万画素以内に収まるいちばん細かい解像度（50 dpi 刻み）です。それを超えると、そのまま書き出すか上限で書き出すかを尋ねます。</li>
+          <li>1枚の画像が約 2 GB を超えるときは、より強く注意します。メモリの少ない PC では失敗することがあります。</li>
+          <li>印刷レイアウトは、QGIS のレイアウト側の書き出し解像度（変えなければ 300 dpi）に従います。</li>
+        </ul>
+      </section>
+
+      <section id="ja-dem">
+        <h2>4. DEM の設定と対応する取得元</h2>
+        <p>「2. DEM」の一覧から取得元を選びます。一覧は地域ごとにまとまっていて、プレビューが掛かる地域の取得元だけが出ます。プレビューが選んだ取得元の地域から出ると選択は外れ、戻っても元には戻りません。この QGIS で読めない取得元（LERC に対応しない GDAL での LINZ）は灰色で残り、理由はツールチップに出ます。</p>
+        <table class="grid">
+          <tr><th>取得元</th><th>セル</th><th>提供・ライセンス</th></tr>
+          <tr><td>ローカル DEM ファイル</td><td>ファイルのまま</td><td>—</td></tr>
+          <tr><td>QLAE フォルダ（ローカル）</td><td>保存した取得元のまま</td><td>保存した取得元に従う（「6. DEM の再利用」）</td></tr>
+          <tr><td>国土地理院 標高タイル：利用可能な最高解像度・DEM1A 1 m・DEM5A 5 m・DEM10B 10 m</td><td>1〜10 m</td><td>国土地理院（国土地理院標高タイル）</td></tr>
+          <tr><td>VIRTUAL SHIZUOKA LP/Grid 0.5 m DTM（静岡県）</td><td>0.5 m</td><td>静岡県、CC BY 4.0</td></tr>
+          <tr><td>長野県 砂防課 R3-4 0.5 m DEM・林務部 0.5 m DEM（長野県）</td><td>0.5 m</td><td>長野県（G空間情報センターのデータセットのページを参照）</td></tr>
+          <tr><td>AHN4 DTM（オランダ）</td><td>0.5 m</td><td>Rijkswaterstaat / PDOK、CC0</td></tr>
+          <tr><td>IGN LiDAR HD MNT（フランス）</td><td>0.5 m</td><td>IGN、Licence Ouverte / Open Licence（Etalab 2.0）</td></tr>
+          <tr><td>ラインラント＝プファルツ DGM1（ドイツ）</td><td>1 m</td><td>©GeoBasis-DE / LVermGeoRP（取得年）、dl-de/by-2-0</td></tr>
+          <tr><td>バイエルン DGM1（ドイツ）</td><td>1 m</td><td>Bayerische Vermessungsverwaltung、CC BY 4.0</td></tr>
+          <tr><td>LINZ DEM（ニュージーランド。LERC 対応の GDAL が必要）</td><td>1 m</td><td>Toitū Te Whenua LINZ ほか、CC BY 4.0</td></tr>
+          <tr><td>AWS Terrain Tiles（Mapzen Terrarium）ズーム 12〜14（全世界）</td><td>地域で異なる</td><td>Mapzen / AWS Open Data と元データの提供者</td></tr>
+        </table>
+        <ul>
+          <li>VIRTUAL SHIZUOKA とラインラント＝プファルツは、タイルの最新の測量の欠けを古い測量で補います。使った測量年は印刷レイアウトに出ます。</li>
+          <li>フランス・ドイツ・ニュージーランド・オランダの取得元を選んでいる間は、データのある範囲を網目で、取得元の地域を暗い破線で示します。網目は目安です（タイルの中に値のないセルがあることもあります）。</li>
+          <li>「ローカル DEM ファイル」を選ぶとすぐにファイルを選ぶ画面が開きます。「…」で別のファイルを、その右のボタンでプレビューをローカル DEM に合わせ直します。</li>
+          <li>位置情報のない DEM（CAD の DXF・DWG、位置や座標系のないラスター）は、選ぶと変換の窓が開きます。座標系・X と Y の入れ替え・単位を選ぶと、ファイルの座標をその座標系の値として DEM に変換し、ダウンロードした DEM と比べて合っているかを「状態」に示します（参考の機能です）。</li>
+        </ul>
+      </section>
+
+      <section id="ja-area">
+        <h2>5. 解析範囲</h2>
+        <table>
+          <tr><th>ポリゴンレイヤー</th><td>選んだポリゴン、または（「選択したポリゴン地物のみを使用」を外すと）プレビューに入るポリゴンを、プレビューで切って使います。多くのポリゴンは解析の中でまとめ、壊れたポリゴンは先に直します。</td></tr>
+          <tr><th>画面の範囲を使用</th><td>プレビューの範囲をそのまま使います。流域範囲図はこのときだけ選べます。</td></tr>
+          <tr><th>出力の枠</th><td>どの図も、範囲を囲む A 判の枠1つに合わせます。枠の外の DEM も、縁の値を正しく計算するために使うことがあります。</td></tr>
+          <tr><th>流域範囲図のとき</th><td>DEM を枠の 3 倍の幅・高さで取得します。流域と等高線はその範囲で、陰影起伏・傾斜・CS立体図は枠の周り 96 セルで計算し、枠で切ります。</td></tr>
+        </table>
+        <div class="note">解析の前に、読む DEM の大きさと使うメモリを見積もります。0.5 m の DEM で約 40 km² から確認を求め、PC の空きメモリに収まらないときはより強く注意します。実行中は「状態」の見出しの右にメモリの使用量が出ます。</div>
+      </section>
+
+      <section id="ja-reuse">
+        <h2>6. DEM の再利用</h2>
+        <ul>
+          <li>一度取得した DEM のタイルは残し、同じ場所の解析では足りない分だけを取得します。対象：VIRTUAL SHIZUOKA、長野県の2種、ラインラント＝プファルツとバイエルン DGM1、国土地理院の標高タイル、AWS Terrain Tiles、AHN4 と IGN LiDAR HD（決まった格子で区切って保存）。LINZ は残しません。</li>
+          <li>保存先は初期では、QGIS を起動している間だけのフォルダ（<code>&lt;プロジェクト&gt;/quick_landscape_analysis/dem_session/</code>）です。QGIS を起動し直した後の解析で片付けます。</li>
+          <li>「地域」の右の歯車（詳細設定）で自分のフォルダ（QLAE フォルダ）を選ぶと、消すまでそこに残ります。</li>
+          <li>測量年を持つ取得元（VIRTUAL SHIZUOKA、ラインラント＝プファルツ）は、毎回測量年を確かめて新しい測量があれば取得します。</li>
+          <li>DEM の取得元に「QLAE フォルダ」（ローカルの下）を選ぶと、保存したタイルだけでネットワークを使わずに解析します。下の一覧でどの取得元のタイルを使うかを選び、プレビューに範囲を網目で示します。タイルのない部分は空白のままです（GeoPDF 用の DEM だけはネットワークで補います）。</li>
+          <li>解析の後、「状態」に使い回したタイルと取得したタイルの数が出ます。</li>
+        </ul>
+      </section>
+
+      <section id="ja-basic">
+        <h2>7. 基本解析</h2>
+        <table>
+          <tr><th>陰影起伏</th><td>光を当てた起伏の陰影。乗算で重ねます。</td></tr>
+          <tr><th>傾斜</th><td>傾斜（度）を 20° から 45° まで 5° ごとに色分けします（もりぞん（MORIZON）原版の傾斜の色区分）。</td></tr>
+          <tr><th>CS立体図</th><td>曲率・傾斜・標高を重ねた地形の表現。凹地（谷）は青、凸地（尾根）は赤みで出ます。傾斜とは排他です（解析管理でどちらか一方を選びます）。</td></tr>
+          <tr><th>等高線</th><td>5 m に平均しならした DEM から、10 m 間隔、20 m・100 m ごとに太く。基盤地図情報の等高線に似せた見た目です。できたレイヤーは最初は非表示です。</td></tr>
+          <tr><th>流域範囲図</th><td>「画面の範囲を使用」のときだけ。谷ごとの流域で、最小 2 ha。GRASS r.watershed（MFD、収束 5）で求めます。GRASS がない・動かないときは、同じ規則でプラグインが numpy で計算します。DEM の穴（水面など）は、流域の計算でだけ周りから埋めます。</td></tr>
+        </table>
+        <ul>
+          <li>解析のチェックは、クリックした選択を QGIS の設定に覚え、次に開いたときもその状態で始まります。</li>
+          <li>結果は解析管理でチェックして見せます。解析のレイヤーはプロジェクトのプラグインのグループに置かれ、窓を閉じても残ります。「解析管理を終了」でプロジェクトから外します（ZIP は残ります）。</li>
+          <li>描く順（上から）：オプショナル1・オプショナル2・オーバーレイ・解析のレイヤー・ベースマップ。</li>
+        </ul>
+      </section>
+
+      <section id="ja-crs">
+        <h2>8. Maps4QGIS で開くときの座標系</h2>
+        <p>GeoPDF と GeoPDF 用の DEM は、プレビューの座標系で作ります。プレビューの座標系は QGIS のメイン地図から取ります（「QGIS メイン地図から中心・座標系・縮尺を取得」）。Maps4QGIS で開く前に、QGIS のプロジェクト（メイン地図）を次の座標系にして、プレビューに取り直してください。</p>
+        <table>
+          <tr><th>日本</th><td>その場所の <b>JGD2011 平面直角座標系</b>（EPSG:6669〜6687）を勧めます。Maps4QGIS の「DEM を自動取得」（国土地理院の標高タイル）は、日本の中の地図ならどの座標系でも使えます（平面直角座標系・JGD2011 緯度経度以外の地図では、DEM を JGD2011 緯度経度で作ります）。</td></tr>
+          <tr><th>日本以外</th><td>その地域の投影座標系（UTM のゾーンや、国の平面座標系）を勧めます。Maps4QGIS は投影座標系で生じる経線収差（回転）を補正します。広い範囲・高緯度の地図による歪みは補正しません。</td></tr>
+          <tr><th>共通</th><td>EPSG コードのある座標系を使ってください。DEM には位置情報と EPSG コードが必要で、GeoPDF と DEM の座標系は一致している必要があります（緯度経度の DEM は例外）。QLAE が作る <code>dem_for_geopdf.tif</code> は、この条件に合わせてあります。</td></tr>
+        </table>
+        <div class="note">Web メルカトル（EPSG:3857）などのメルカトルは、地図の上の距離が地上より長くなります（日本で約 1.2 倍、北緯 52° で約 1.6 倍）。現地で距離を読む地図には向きません。プレビューがメルカトルのまま GeoPDF や Maps4QGIS を作ろうとすると、QLAE がその場所に合う座標系（日本では平面直角座標系、日本の外では UTM のゾーン）を示して確認します。メルカトルの GeoPDF でも、Maps4QGIS は 3D 表示の大きさを地図の中心の緯度で地上の長さに直します（広い地図の端では少しずれます）。</div>
+      </section>
+
+      <section id="ja-maps">
+        <h2>9. Maps4QGIS の操作</h2>
+        <p>Maps4QGIS は、QLAE に同梱した Avid Maps Extra の QGIS 版です。QLAE がこの PC の中で動かす小さなサーバーから、ブラウザで開きます。地図の変換と保存はブラウザの中で行います。</p>
+        <h3>開き方</h3>
+        <ul>
+          <li><b>解析管理から（案内付き）</b>：右下の「Maps4QGIS」を押すと、今のプレビューから選んだ用紙・解像度で GeoPDF を作り、解析 ZIP と <code>&lt;プロジェクト&gt;/quick_landscape_analysis/exports/&lt;解析名&gt;/geopdf.pdf</code> に置いてから、読み込みの案内付きで開きます。</li>
+          <li><b>案内なしで開く</b>：GeoPDF を作らず、案内も出さずに同じ地図を開きます。</li>
+          <li><b>スマホ用 PWA</b>：Avid Maps の紹介ページを開きます（下の「Avid Maps について」）。</li>
+          <li>解析を管理していないときは、右下の「Maps4QGIS」で直接開きます。QGIS の「プラグイン」メニューの「Maps4QGIS（QLAE から起動）」でも、QLAE の窓を開かずに開けます。</li>
+        </ul>
+        <h3>GeoPDF の読み込み（案内付き）</h3>
+        <ol>
+          <li><code>▤</code>（地図管理）を押し、「インポート開始」を押します。</li>
+          <li>解析 ZIP の一覧から <code>geopdf.pdf</code> を選びます。</li>
+          <li>「DEM を指定する」を押し、<code>dem_for_geopdf.tif</code> を選びます。</li>
+          <li>変換品質を選び、「変換する」を押します。</li>
+        </ol>
+        <p class="muted">選ぶ画面を開くたびに、選ぶファイルが点滅します。関係のない PDF や DEM は「別のファイルを開く」から選べます。DEM がない解析では、2D で取り込むか別の DEM を選べます。</p>
+        <h3>地図画面のボタン</h3>
+        <table>
+          <tr><th><code>▤</code> 地図管理</th><td>GeoPDF の読み込み、保存した地図の一覧、バックアップ。</td></tr>
+          <tr><th><code>⌖</code> GPS 開始 / <code>◎</code> 現在地</th><td>位置の取得を始め、現在地へ移動します（長押しで追従）。</td></tr>
+          <tr><th><code>⚑</code> 現在地フラグ / <code>∿</code> 軌跡記録</th><td>現在地に印を付け、歩いた軌跡を記録します。記録は Field Log から GPX で書き出せます。</td></tr>
+          <tr><th><code>⌗</code> 座標</th><td>座標を表示します。</td></tr>
+          <tr><th><code>☀</code> 消灯防止</th><td>画面が消えないようにします。</td></tr>
+          <tr><th>3D 地形表示</th><td>DEM を指定した地図を 3D で表示します（方位・視線角度を変えられます）。</td></tr>
+          <tr><th>Specs</th><td>仕様と設定。言語（自動・English・日本語）や、バックアップの案内の入切。</td></tr>
+        </table>
+        <div class="note">取り込んだ地図はブラウザに保存されます。最後の案内で、復元用のバックアップを書き出すか、書き出さずに終えるかを選べます。この PC のデスクトップ版と、スマホなどのオンライン版（PWA）は、ブラウザの保存場所が別です。スマホで使うときは、PDF と DEM をスマホかクラウドに移して、そちらで取り込んでください（PDF は上の exports フォルダに、DEM は「レイヤー」で同じフォルダに書き出せます）。</div>
+      </section>
+
+      <section id="ja-avid">
+        <h2>10. Avid Maps について</h2>
+        <ul>
+          <li>Avid Maps は、GeoPDF を取り込んで現地でオフラインで使う地図アプリ（ブラウザで動く PWA）です。タイル地図に頼らず、現場ごとの地図を対象にします。</li>
+          <li>現在提供しているのは <b>Avid Maps Extra</b> だけです。以前の版の提供は終わっています。</li>
+          <li>Maps4QGIS は、Avid Maps Extra の QGIS 版です。</li>
+          <li>紹介ページ：<a href="https://avid.mokuren.ne.jp/avidmaps/system_overview.php">https://avid.mokuren.ne.jp/avidmaps/system_overview.php</a></li>
+        </ul>
+      </section>
+
+      <section id="ja-regional">
+        <h2>11. 地域解析</h2>
+        <p>地域解析のある国では、プレビューがその国にある間、「3. 解析」のチェックの下に「地域」が出ます（DEM の取得元を選ぶまで灰色、初期はオン）。基本解析と一緒に実行し、同じ解析 ZIP（<code>regional/</code>）に入ります。レイヤーは最初は非表示で、解析管理の右の列（地域）に並びます。地域解析のない国の対応は、予定もなく、ないとも決めていません。</p>
+
+        <div class="country">
+          <h3>日本</h3>
+          <p>使える DEM 取得元：VIRTUAL SHIZUOKA、国土地理院 DEM1A 1 m、長野県の 0.5 m DEM（砂防課・林務部）。ほかの取得元ではチェックが灰色になります。どちらも試作です。</p>
+          <table>
+            <tr><th>CS Valley（ゲート高・低）</th><td>CS立体図のうち、沢・湧水・窪地など凹んで見える所（CS立体図が青く塗る所）だけを残し、ほかは薄くしたもの。ゲートが高いほど、強い凹みだけを残します。2つの間と CS立体図とは排他です（傾斜とは一緒に見られます）。</td></tr>
+            <tr><th>沢の成立（MFD）</th><td>谷に集まる水の量（MFD で上から流れ込む面積）を水色で示し、CS Valley の凹みが沢として成り立っているかを読むためのもの。CS Valley の上に置きます。
+              <br><span class="swatch" style="background:#d4f4fb"></span>0.1〜0.5 ha 谷頭・0次谷
+              <br><span class="swatch" style="background:#9de6f5"></span>0.5〜2 ha 沢の始まり
+              <br><span class="swatch" style="background:#5fd3ec"></span>2〜10 ha 沢
+              <br><span class="swatch" style="background:#1fb5dc"></span>10 ha 以上 本流
+              <br>0.1 ha 以下は描きません。段階の分け目は仮置きです。解析の枠の DEM だけで計算するので、枠より上流の面積は数えません。</td></tr>
+          </table>
+          <p class="muted">出典：新しいデータは使いません。解析の DEM（選んだ取得元。上の「4. DEM の設定」の提供・ライセンス）から作ります。</p>
+        </div>
+
+        <div class="country">
+          <h3>オランダ</h3>
+          <p>地図（解析管理の 地域・解析）</p>
+          <table>
+            <tr><th>段彩（NAP 基準）</th><td>PDOK が AHN DTM を見せる色で DEM を色分け（−8〜350 m、49 区分）。乗算で重ねます。新しいデータは使いません。</td></tr>
+            <tr><th>傾斜（範囲階調・試作）</th><td>穴埋めした DEM から作る傾斜。区分の分け目を範囲の傾斜に合わせます（場所ごとに変わるので比べられません）。基本の傾斜とは排他です。</td></tr>
+            <tr><th>地物の高さ（樹木・建物）</th><td>AHN の DSM から地面（穴埋めした DEM）を引いたもの。建物も含みます。</td></tr>
+            <tr><th>BRO 地形分類図</th><td>BRO Geomorfologische kaart 1:50,000。初回だけ全国分（約 213 MB）を取得して残し、解析ごとに範囲の分だけを使います。</td></tr>
+          </table>
+          <p>データ（解析管理の 地域・データ）：DEM（穴埋め）、DSM、ベースマップ用のオルソフォトとカラー赤外オルソフォト（最新の年）。</p>
+          <p class="muted">出典：AHN4 DTM・DSM（Rijkswaterstaat / PDOK、CC0）、BRO Geomorfologische kaart（PDOK、CC0）、オルソフォト（Beeldmateriaal.nl（PDOK）、CC BY 4.0）。国の輪郭：Bestuurlijke Gebieden（Kadaster、CC BY 4.0）。</p>
+        </div>
+      </section>
+
+      <section id="ja-about">
+        <h2>12. このプラグインについて</h2>
+        <ul>
+          <li>このプラグインは DEM の提供者（国土地理院、静岡県、長野県など）が作ったものではなく、提供者の承認や保証はありません。</li>
+          <li>取得したデータと、それから作った図の利用は、各提供者の条件（出典の表示、加工の明示）に従ってください。国土地理院の標高タイルは、<a href="https://www.gsi.go.jp/kikakuchousei/kikakuchousei40182.html">国土地理院の利用規約</a>と測量法に従ってください。</li>
+          <li>結果は下見のために DEM から計算したもので、現地と違うことがあります。現地で確かめてください。</li>
+          <li>傾斜の色区分と流域の r.watershed の設定（MFD、収束 5）は、林野庁の森林ゾーニング支援ツール もりぞん（MORIZON）原版（Copyright (C) 2021 MIERUNE Inc.）から取っています。流域のコードは取っていません。</li>
+          <li>無保証で提供します。利用の結果について、作者は責任を負いません。</li>
+          <li>ライセンス：GNU General Public License v2 以降。</li>
+        </ul>
+      </section>
+    </div>
+
+    <!-- ===== English ===== -->
+    <div id="content-en">
+
+      <nav>
+        <ol class="toc">
+          <li><a href="#en-purpose">Purpose and use</a></li>
+          <li><a href="#en-preview">Using the preview</a></li>
+          <li><a href="#en-export">The four exports and resolution</a></li>
+          <li><a href="#en-dem">DEM settings and sources</a></li>
+          <li><a href="#en-area">Analysis area</a></li>
+          <li><a href="#en-reuse">Reusing DEMs</a></li>
+          <li><a href="#en-basic">Basic analyses</a></li>
+          <li><a href="#en-crs">CRS for Maps4QGIS</a></li>
+          <li><a href="#en-maps">Using Maps4QGIS</a></li>
+          <li><a href="#en-avid">About Avid Maps</a></li>
+          <li><a href="#en-regional">Regional analyses</a></li>
+          <li><a href="#en-about">About this plugin</a></li>
+        </ol>
+      </nav>
+
+      <section id="en-purpose">
+        <h2>1. Purpose and use</h2>
+        <p>QLAE is for terrain reconnaissance: reading the landform of an area quickly from a DEM before going to the site. The slope classes, catchment size and contour intervals are fixed for reading forest terrain, so that maps of different areas can be compared, and checked in the field, on the same terms.</p>
+        <div class="points">
+          <div class="point"><b>Made on an A-series sheet</b>The preview is an A-series sheet. The analysis and the exports follow its frame.</div>
+          <div class="point"><b>One analysis, one ZIP</b>Each analysis is saved as a ZIP beside the project, to be loaded again and exported in another form later.</div>
+          <div class="point"><b>Exported for the task</b>A GeoPDF for the field, an image for documents, layers kept in QGIS, a print layout as a temporary record.</div>
+        </div>
+        <h3>Basic steps</h3>
+        <ol>
+          <li>Save the QGIS project (analyses are saved in <code>quick_landscape_analysis/</code> in the project's folder).</li>
+          <li>Open the plugin's window and move the preview on the left to the place to analyse.</li>
+          <li>In "1. Area", choose a polygon layer or "Use preview map extent".</li>
+          <li>In "2. DEM", choose a source.</li>
+          <li>In "3. Analysis", tick the maps to make (the ticks are remembered for the next opening).</li>
+          <li>Enter an analysis name (blank: the run time) and click "Run" in "4. Run".</li>
+          <li>When it is done, the right side becomes "Analysis management": choose the layers to show, and export.</li>
+        </ol>
+        <div class="note">A name already in use cannot be run (analyses are never overwritten). Saved analyses can be loaded from the "Results" list.</div>
+      </section>
+
+      <section id="en-preview">
+        <h2>2. Using the preview</h2>
+        <table>
+          <tr><th>Pan and zoom</th><td>Drag to pan, wheel to zoom ("Map navigation (1)"). Zooming out stops where the whole earth fills the sheet's width or height.</td></tr>
+          <tr><th>Centre snap</th><td>Within 45 px of the preview's centre a red cross follows the mouse, and within 15 px it snaps to the centre. The wheel then zooms about the centre, so the sheet's centre stays in place.</td></tr>
+          <tr><th>Select polygon (2)</th><td>Selects the polygons of the analysis area: click to select, drag to select a range, Shift adds, Ctrl selects or deselects. "Clear polygon selection" clears it.</td></tr>
+          <tr><th>With QGIS</th><td>The first view follows the QGIS main map; then the preview moves on its own. Buttons get the centre, CRS and scale from the main map again, and fit the main map to the preview.</td></tr>
+          <tr><th>Paper</th><td>A5 to A0, portrait or landscape. Changing the paper changes the paper scale; the GeoPDF and the image use the chosen size.</td></tr>
+          <tr><th>Base map and overlay</th><td>Chosen below the preview from the project's layers, drawn with their QGIS styles. The base map is under the analysis, the overlay above it.</td></tr>
+          <tr><th>Top of the window</th><td>"country - region: latitude, longitude": the country and region of the chosen DEM source (for a local DEM or the global source, the country at the preview centre from QGIS's world map), and the preview centre (WGS84).</td></tr>
+        </table>
+      </section>
+
+      <section id="en-export">
+        <h2>3. The four exports and resolution</h2>
+        <p>Exports are in analysis management. The GeoPDF, the image and the print layout draw exactly what the preview shows; the layers export writes all the layers of the analysis, whatever the preview shows.</p>
+        <table>
+          <tr><th>GeoPDF</th><td>For field surveys, opened in a field map app that reads GeoPDF. Made in the background; each layer is kept as a GeoPDF layer. You choose where to save it.</td></tr>
+          <tr><th>Image</th><td>For documents outside QGIS: PNG, JPEG or TIFF with a world file, at the paper size. The button names its format; the button at its right switches the format.</td></tr>
+          <tr><th>Layers</th><td>Survey information kept in QGIS. The analysis layers are written with their styles (.qml) to <code>&lt;project&gt;/quick_landscape_analysis/exports/&lt;analysis name&gt;/</code> and added as ordinary layers in a group. A record of the print layout (<code>qlae_layout.json</code>) is written too: right-click the group in the layer panel and choose "Make print layout" to make the layout without the plugin's window. The DEM for the GeoPDF (<code>dem_for_geopdf.tif</code>) and a GeoPDF made by Maps4QGIS are written to the same folder (not added as layers).</td></tr>
+          <tr><th>Print layout</th><td>A temporary record: one layout named "Quick Landscape Analysis Explorer", replaced by each new one.</td></tr>
+        </table>
+        <h3>Resolution</h3>
+        <ul>
+          <li>The GeoPDF and the image each have a resolution: 96, 150, 200, 300, 600 dpi and "Custom..." (1 to 3000 dpi). Defaults: GeoPDF 300 dpi, image 200 dpi. The GeoPDF's resolution is that of its image parts (hillshade, base map, ...).</li>
+          <li>"*" in the lists marks the guideline processing limit: for each paper, the finest resolution (in 50 dpi steps) whose image stays within 60 million pixels. Above it, the export asks whether to export as it is or at the limit.</li>
+          <li>When one image would go over about 2 GB, the notice is stronger: a PC without enough memory may fail to export it.</li>
+          <li>The print layout follows the layout's own export resolution in QGIS (300 dpi unless changed).</li>
+        </ul>
+      </section>
+
+      <section id="en-dem">
+        <h2>4. DEM settings and sources</h2>
+        <p>Choose a source in the "2. DEM" list. It is grouped by region, and only the sources whose region the preview touches are listed. When the preview leaves the chosen source's region, the choice is cleared and not brought back on return. A source this QGIS cannot read (LINZ with a GDAL without LERC) stays listed, greyed; its tooltip says why.</p>
+        <table class="grid">
+          <tr><th>Source</th><th>Cell</th><th>Provider / licence</th></tr>
+          <tr><td>Local DEM file</td><td>the file's</td><td>—</td></tr>
+          <tr><td>QLAE folder (Local)</td><td>the kept source's</td><td>as the kept source (see 6. Reusing DEMs)</td></tr>
+          <tr><td>GSI elevation tiles: best available, DEM1A 1 m, DEM5A 5 m, DEM10B 10 m</td><td>1–10 m</td><td>Geospatial Information Authority of Japan (国土地理院標高タイル)</td></tr>
+          <tr><td>VIRTUAL SHIZUOKA LP/Grid 0.5 m DTM (Shizuoka)</td><td>0.5 m</td><td>Shizuoka Prefecture, CC BY 4.0</td></tr>
+          <tr><td>Nagano Sabo R3-4 0.5 m DEM / Nagano Rinmu 0.5 m DEM (Nagano)</td><td>0.5 m</td><td>Nagano Prefecture (see the dataset pages on G空間情報センター)</td></tr>
+          <tr><td>AHN4 DTM (Netherlands)</td><td>0.5 m</td><td>Rijkswaterstaat / PDOK, CC0</td></tr>
+          <tr><td>IGN LiDAR HD MNT (France)</td><td>0.5 m</td><td>IGN, Licence Ouverte / Open Licence (Etalab 2.0)</td></tr>
+          <tr><td>Rhineland-Palatinate DGM1 (Germany)</td><td>1 m</td><td>©GeoBasis-DE / LVermGeoRP (year obtained), dl-de/by-2-0</td></tr>
+          <tr><td>Bavaria DGM1 (Germany)</td><td>1 m</td><td>Bayerische Vermessungsverwaltung, CC BY 4.0</td></tr>
+          <tr><td>LINZ DEM (New Zealand; needs GDAL with LERC)</td><td>1 m</td><td>Toitū Te Whenua LINZ and the survey licensors, CC BY 4.0</td></tr>
+          <tr><td>AWS Terrain Tiles (Mapzen Terrarium), zoom 12–14 (global)</td><td>varies by region</td><td>Mapzen / AWS Open Data and their data sources</td></tr>
+        </table>
+        <ul>
+          <li>VIRTUAL SHIZUOKA and Rhineland-Palatinate fill gaps in a tile's newest survey from older surveys; the survey years used are shown on the print layout.</li>
+          <li>While a source in France, Germany, New Zealand or the Netherlands is chosen, the preview shows a mesh where it has data and a dark dashed line around its region. The mesh is a guide only (a tile can still hold cells without values).</li>
+          <li>Choosing "Local DEM file" opens the file chooser at once. "…" chooses another file; the button at its right fits the preview to the local DEM again.</li>
+          <li>A DEM without a position (CAD DXF or DWG, a raster without georeferencing or CRS) opens a conversion window when chosen. With the coordinate system, X/Y swap and units chosen, the file's coordinates are taken as values of that system; the result is compared with a downloaded DEM, and the Status section shows how well they agree (a reference feature).</li>
+        </ul>
+      </section>
+
+      <section id="en-area">
+        <h2>5. Analysis area</h2>
+        <table>
+          <tr><th>Polygon layer</th><td>The selected polygons, or (with "Use selected polygon features only" off) the polygons in the preview, cut to the preview. Many polygons are combined in the analysis; broken ones are repaired first.</td></tr>
+          <tr><th>Use preview map extent</th><td>The preview's extent as it is. The catchment map can be chosen only with it.</td></tr>
+          <tr><th>Output frame</th><td>Every result uses one A-series frame around the area; DEM outside the frame may be used to compute edge values correctly.</td></tr>
+          <tr><th>With catchments</th><td>The DEM is fetched three times wider and higher than the frame. Catchments and contours are computed on that area; hillshade, slope and the CS Map on the frame with a margin of 96 cells; all are cut to the frame.</td></tr>
+        </table>
+        <div class="note">Before an analysis the plugin estimates the DEM and the memory it takes. It asks first from about 40 km² of a 0.5 m DEM, and warns more strongly when it would not fit in the PC's free memory. While it runs, a memory meter is shown at the right of the Status heading.</div>
+      </section>
+
+      <section id="en-reuse">
+        <h2>6. Reusing DEMs</h2>
+        <ul>
+          <li>Fetched DEM tiles are kept, and an analysis of the same place fetches only the missing ones. Kept: VIRTUAL SHIZUOKA, the two Nagano DEMs, Rhineland-Palatinate and Bavaria DGM1, GSI elevation tiles, AWS Terrain Tiles, and AHN4 and IGN LiDAR HD (in chunks on a fixed grid). LINZ is not kept.</li>
+          <li>By default they are kept for the QGIS run in <code>&lt;project&gt;/quick_landscape_analysis/dem_session/</code>, removed by an analysis after QGIS is started again.</li>
+          <li>In the advanced settings (the gear at the right of Region), a folder of your own (the QLAE folder) keeps them until you remove them.</li>
+          <li>Sources with survey years (VIRTUAL SHIZUOKA, Rhineland-Palatinate) check the years every time and fetch a newer survey.</li>
+          <li>With "QLAE folder" (under Local) as the DEM source, an analysis uses only the kept tiles, without the network. A second list chooses whose tiles, and the preview shows their area with a mesh. Parts without tiles are left blank (only the DEM for the GeoPDF fills its gaps from the network).</li>
+          <li>After an analysis, the Status section tells how many tiles were reused and downloaded.</li>
+        </ul>
+      </section>
+
+      <section id="en-basic">
+        <h2>7. Basic analyses</h2>
+        <table>
+          <tr><th>Hillshade</th><td>The relief lit from one side, drawn multiplied.</td></tr>
+          <tr><th>Slope</th><td>Slope in degrees, in 5° classes from 20° to 45° (the slope colour classes of the original MORIZON).</td></tr>
+          <tr><th>CS Map</th><td>Curvature, slope and elevation combined: hollows (valleys) blue, ridges reddish. Exclusive with the slope (analysis management ticks one of the two).</td></tr>
+          <tr><th>Contours</th><td>Every 10 m, thicker every 20 m and 100 m, from a DEM averaged to 5 m and smoothed, styled like the GSI basic-map contours. The layer is hidden at first.</td></tr>
+          <tr><th>Catchment map</th><td>With "Use preview map extent" only. Catchments by valley, smallest 2 ha, by GRASS r.watershed (MFD, convergence 5); where GRASS is missing or does not run, the plugin computes them with numpy after the same rules. Gaps in the DEM (water surfaces) are filled from around them for the catchments only.</td></tr>
+        </table>
+        <ul>
+          <li>The analysis ticks you click are kept in the QGIS settings, so the window opens with them next time.</li>
+          <li>Results are shown with ticks in analysis management. The analysis layers are placed in the plugin's group in the project and stay when the window closes. "Finish analysis management" removes them from the project (the ZIP stays).</li>
+          <li>Drawing order, top first: optional 1, optional 2, overlay, analysis layers, base map.</li>
+        </ul>
+      </section>
+
+      <section id="en-crs">
+        <h2>8. CRS for Maps4QGIS</h2>
+        <p>The GeoPDF and the DEM for it are made in the preview's CRS, which comes from the QGIS main map ("Get the centre, CRS and scale from the QGIS main map"). Before opening Maps4QGIS, set the QGIS project (main map) to the CRS below and get it into the preview again.</p>
+        <table>
+          <tr><th>Japan</th><td>The place's <b>JGD2011 Japan Plane Rectangular CS</b> (EPSG:6669–6687) is recommended. Maps4QGIS's "Fetch DEM automatically" (GSI elevation tiles) works for maps in Japan in any CRS (for maps in a CRS other than a plane rectangular CS or JGD2011 latitude/longitude, the DEM is made in JGD2011 latitude/longitude).</td></tr>
+          <tr><th>Elsewhere</th><td>The region's projected CRS (a UTM zone or the national grid) is recommended. Maps4QGIS corrects the rotation (meridian convergence) of projected CRSs; it does not correct the distortion of wide or high-latitude maps.</td></tr>
+          <tr><th>Always</th><td>Use a CRS with an EPSG code. The DEM needs its position and an EPSG code, and the GeoPDF and the DEM must be in the same CRS (a latitude/longitude DEM is the exception). The <code>dem_for_geopdf.tif</code> QLAE makes meets these conditions.</td></tr>
+        </table>
+        <div class="note">In Mercator, such as Web Mercator (EPSG:3857), distances on the map are longer than on the ground (about 1.2 times in Japan, 1.6 times at 52° north), so it does not suit a map for reading distances in the field. When the preview is in Mercator, QLAE suggests a CRS for the place (a plane rectangular CS in Japan, a UTM zone elsewhere) before it makes a GeoPDF or opens Maps4QGIS. For a Mercator GeoPDF, Maps4QGIS still scales the 3D view to ground lengths at the map's centre latitude (wide maps are slightly off at their edges).</div>
+      </section>
+
+      <section id="en-maps">
+        <h2>9. Using Maps4QGIS</h2>
+        <p>Maps4QGIS is the QGIS version of Avid Maps Extra, bundled with QLAE. It opens in the browser from a small server QLAE runs on this PC; maps are converted and saved in the browser.</p>
+        <h3>Opening it</h3>
+        <ul>
+          <li><b>From analysis management (guided)</b>: "Maps4QGIS" at the bottom right makes a GeoPDF of the current preview with the chosen paper and resolution, puts it in the analysis ZIP and in <code>&lt;project&gt;/quick_landscape_analysis/exports/&lt;analysis name&gt;/geopdf.pdf</code>, and opens the map with an import guide.</li>
+          <li><b>Open without guide</b>: opens the same map without making a GeoPDF or showing the guide.</li>
+          <li><b>Mobile PWA</b>: opens the Avid Maps overview page (see About Avid Maps).</li>
+          <li>When no analysis is being managed, "Maps4QGIS" at the bottom right opens it directly; "Maps4QGIS from QLAE" in the QGIS Plugins menu opens it without the QLAE window.</li>
+        </ul>
+        <h3>Importing the GeoPDF (guided)</h3>
+        <ol>
+          <li>Click <code>▤</code> (Map Library), then "Start import".</li>
+          <li>Select <code>geopdf.pdf</code> from the analysis ZIP list.</li>
+          <li>Click "Choose a DEM" and select <code>dem_for_geopdf.tif</code>.</li>
+          <li>Choose the conversion quality and click "Convert".</li>
+        </ol>
+        <p class="muted">The file to choose blinks when each picker opens. Other PDFs or DEMs can be chosen with "Open another file". For an analysis without a DEM, import the GeoPDF in 2D or choose another DEM.</p>
+        <h3>Map buttons</h3>
+        <table>
+          <tr><th><code>▤</code> Map Library</th><td>GeoPDF import, stored maps, backup.</td></tr>
+          <tr><th><code>⌖</code> Start GPS / <code>◎</code> Location</th><td>Starts positioning and moves to your location (long press to follow).</td></tr>
+          <tr><th><code>⚑</code> Flag / <code>∿</code> Track</th><td>Marks your location and records your track; the Field Log exports them as GPX.</td></tr>
+          <tr><th><code>⌗</code> Coordinates</th><td>Shows the coordinates.</td></tr>
+          <tr><th><code>☀</code> Keep awake</th><td>Keeps the screen on.</td></tr>
+          <tr><th>3D terrain</th><td>Shows a map with a DEM in 3D (heading and view angle can be changed).</td></tr>
+          <tr><th>Specs</th><td>Specifications and settings: language (Auto, English, Japanese) and backup reminders on or off.</td></tr>
+        </table>
+        <div class="note">Imported maps are saved in the browser. The final guide lets you export a backup for recovery or finish without one. The desktop app on this PC and the online (PWA) version on a phone have separate browser storage: to use the map on a phone, move the PDF and the DEM to the phone or your cloud storage and import them there (the PDF is in the exports folder above; "Layers" writes the DEM to the same folder).</div>
+      </section>
+
+      <section id="en-avid">
+        <h2>10. About Avid Maps</h2>
+        <ul>
+          <li>Avid Maps is a field map app (a PWA running in the browser) that imports GeoPDFs for offline use on site. It is for site-specific maps, not tile maps.</li>
+          <li>Only <b>Avid Maps Extra</b> is provided now; the earlier version is no longer provided.</li>
+          <li>Maps4QGIS is the QGIS version of Avid Maps Extra.</li>
+          <li>Overview page: <a href="https://avid.mokuren.ne.jp/avidmaps/system_overview.php">https://avid.mokuren.ne.jp/avidmaps/system_overview.php</a></li>
+        </ul>
+      </section>
+
+      <section id="en-regional">
+        <h2>11. Regional analyses</h2>
+        <p>Where a country has one, a "Regional" check appears under the checks of "3. Analysis" while the preview is in that country (greyed until a DEM source is chosen; on by default). It runs with the basic analysis and is kept in the same analysis ZIP (<code>regional/</code>). Its layers are off at first and listed in the right-hand column (Regional) of analysis management. For countries without one, future support is neither scheduled nor ruled out.</p>
+
+        <div class="country">
+          <h3>Japan</h3>
+          <p>For these DEM sources: VIRTUAL SHIZUOKA, GSI DEM1A 1 m, and the Nagano 0.5 m DEMs (Sabo, Rinmu); with another source the check is greyed. Both are prototypes.</p>
+          <table>
+            <tr><th>CS Valley (Gate High, Low)</th><td>The CS Map with only what it colours as hollows kept (streams, springs, hollows: what the CS Map draws blue), the rest faint. The higher the gate, the stronger a hollow must be to stay. Exclusive with each other and with the CS Map (they can be shown with the slope).</td></tr>
+            <tr><th>Valley flow (MFD)</th><td>How much water gathers along the valleys (the area draining from above by MFD flow), in light blue, to read which hollows of the CS Valley have become streams. Drawn above the CS Valley.
+              <br><span class="swatch" style="background:#d4f4fb"></span>0.1–0.5 ha valley head / hollow
+              <br><span class="swatch" style="background:#9de6f5"></span>0.5–2 ha channel start
+              <br><span class="swatch" style="background:#5fd3ec"></span>2–10 ha stream
+              <br><span class="swatch" style="background:#1fb5dc"></span>over 10 ha main stream
+              <br>Up to 0.1 ha is not drawn. The stages are provisional. Computed on the analysis frame's DEM only: the area above the frame is not counted.</td></tr>
+          </table>
+          <p class="muted">Source: no new data; made from the analysis DEM (the chosen source; see its provider and licence in 4. DEM settings).</p>
+        </div>
+
+        <div class="country">
+          <h3>The Netherlands</h3>
+          <p>Maps (Regional, Analysis in analysis management)</p>
+          <table>
+            <tr><th>NAP colouring</th><td>The DEM coloured as PDOK shows the AHN DTM (−8 to 350 m, 49 classes), drawn multiplied. No new data.</td></tr>
+            <tr><th>Slope (local scale, prototype)</th><td>The slope from the DEM with its holes filled, its class breaks fitted to the area (they change from place to place, so they cannot be compared). Exclusive with the basic slope.</td></tr>
+            <tr><th>Object height (trees and buildings)</th><td>AHN's DSM less the ground (the DEM with its holes filled); buildings included.</td></tr>
+            <tr><th>Geomorphology</th><td>BRO Geomorfologische kaart 1:50,000. The whole country's map (about 213 MB) is fetched the first time and kept; each analysis keeps only its area.</td></tr>
+          </table>
+          <p>Data (Regional, Data in analysis management): DEM (holes filled), DSM, and the newest orthophoto and colour-infrared orthophoto for the base map.</p>
+          <p class="muted">Sources: AHN4 DTM and DSM (Rijkswaterstaat / PDOK, CC0), BRO Geomorfologische kaart (PDOK, CC0), orthophotos (Beeldmateriaal.nl (PDOK), CC BY 4.0). Country outline: Bestuurlijke Gebieden (Kadaster, CC BY 4.0).</p>
+        </div>
+      </section>
+
+      <section id="en-about">
+        <h2>12. About this plugin</h2>
+        <ul>
+          <li>This plugin was not made by the providers of the DEM data (such as the Geospatial Information Authority of Japan, Shizuoka Prefecture or Nagano Prefecture), and is not endorsed or guaranteed by them.</li>
+          <li>Use of the fetched data and of the maps made from it must follow each provider's terms: show the source, and note any processing. For GSI elevation tiles, follow the <a href="https://www.gsi.go.jp/kikakuchousei/kikakuchousei40182.html">GSI terms of use</a> and the Survey Act of Japan.</li>
+          <li>The results are computed from DEMs for reconnaissance and can differ from the actual site. Check them in the field.</li>
+          <li>The slope colour classes and the r.watershed settings for catchments (MFD, convergence 5) are taken from the original MORIZON, the forest zoning support tool of the Forestry Agency of Japan (Copyright (C) 2021 MIERUNE Inc.); no code is taken from it for the catchments.</li>
+          <li>The plugin is provided without warranty; the author takes no responsibility for any result of its use.</li>
+          <li>License: GNU General Public License v2 or later.</li>
+        </ul>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    function getLang() {
+      var hash = window.location.hash.replace('#', '');
+      if (hash.indexOf('lang=en') >= 0) return 'en';
+      if (hash.indexOf('lang=ja') >= 0) return 'ja';
+      var languages = navigator.languages && navigator.languages.length
+        ? navigator.languages
+        : [navigator.language || navigator.userLanguage || ''];
+      for (var i = 0; i < languages.length; i++) {
+        var language = String(languages[i] || '').toLowerCase();
+        if (language.indexOf('ja') === 0) return 'ja';
+        if (language.indexOf('en') === 0) return 'en';
+      }
+      return 'en';
+    }
+    function applyLang(lang) {
+      document.getElementById('content-ja').style.display = (lang === 'ja') ? '' : 'none';
+      document.getElementById('content-en').style.display = (lang === 'en') ? '' : 'none';
+      document.documentElement.lang = lang;
+      document.querySelectorAll('[data-ja]').forEach(function (el) { el.style.display = (lang === 'ja') ? '' : 'none'; });
+      document.querySelectorAll('[data-en]').forEach(function (el) { el.style.display = (lang === 'en') ? '' : 'none'; });
+    }
+    function toggleLang() {
+      var next = (getLang() === 'ja') ? 'en' : 'ja';
+      window.location.hash = 'lang=' + next;
+      applyLang(next);
+    }
+    applyLang(getLang());
+  </script>
+</body>
+</html>

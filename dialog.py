@@ -4,6 +4,7 @@ import configparser
 import datetime
 import json
 import math
+import html
 import os
 import re
 import shutil
@@ -2183,7 +2184,7 @@ class LandscapeExplorerDialog(QDialog):
             "The GeoPDF export was cancelled.",
             "GeoPDFの書き出しを取り消しました。",
         )
-        if not self._confirm_wms_export():
+        if not self._confirm_wms_export() or not self._confirm_field_crs():
             self._show_status(cancelled)
             return
         dpi = self._checked_export_dpi(
@@ -3748,7 +3749,36 @@ class LandscapeExplorerDialog(QDialog):
             )
         )
         outer.addWidget(self.layerOrderArrows, 1)
+        self._restore_analysis_checks()
         return box
+
+    def _analysis_check_settings(self):
+        ('The analysis checks remembered between openings: (settings key, '
+         'check, default).')
+        return (
+            ("hillshade", self.hillshadeCheck, True),
+            ("slope", self.slopeCheck, True),
+            ("cs_map", self.csMapCheck, True),
+            ("contours", self.contoursCheck, True),
+            ("watershed", self.watershedCheck, False),
+            ("regional", self.regionalCheck, True),
+        )
+
+    def _restore_analysis_checks(self):
+        """Tick the analysis checks as they were last chosen (QGIS settings:
+        kept over reloads and restarts), and remember each click. Only a
+        click is remembered: opening a saved analysis sets the checks to
+        its outputs without changing the choice."""
+        settings = QgsSettings()
+        for key, check, default in self._analysis_check_settings():
+            setting = ANALYSIS_CHECK_KEY + key
+            # Not blocked: the layer order arrows follow the checks.
+            check.setChecked(settings.value(setting, default, type=bool))
+            check.clicked.connect(
+                lambda on, setting=setting: QgsSettings().setValue(
+                    setting, bool(on)
+                )
+            )
 
     def _update_regional_option(self, *args):
         """Offer the regional analysis of the country at the preview centre
@@ -3779,13 +3809,16 @@ class LandscapeExplorerDialog(QDialog):
 
     def _update_regional_enabled(self, *args):
         ('The regional check is greyed until a DEM source is chosen (2. '
-         'DEM).')
+         'DEM), and for a source its OPTION does not list ("sources").')
         del args
         if hasattr(self, "regionalCheck"):
-            self.regionalCheck.setEnabled(
-                bool(self._dem_source_key()) and self._dem_source_available()
-            )
             option = self._regionalOption
+            wanted = (option or {}).get("sources")
+            self.regionalCheck.setEnabled(
+                bool(self._dem_source_key())
+                and self._dem_source_available()
+                and (not wanted or self._effective_source_key() in wanted)
+            )
             if option is not None:
                 lines = [tr(*option.get("tooltip", option["label"]))]
                 note = self._regional_first_note()
@@ -3970,6 +4003,15 @@ class LandscapeExplorerDialog(QDialog):
         self.languageButton.setToolTip(
             tr("Switch to Japanese.", "英語へ切り替えます。")
         )
+        # The manual (HTML) in the browser, at the right of the language.
+        self.manualButton = QPushButton(tr("Manual", "マニュアル"))
+        self.manualButton.setToolTip(
+            tr(
+                "Open the manual in the browser.",
+                "マニュアルをブラウザで開きます。",
+            )
+        )
+        self.manualButton.clicked.connect(self._open_manual)
         self.closeButton = QPushButton(tr("Close", "閉じる"))
         self.maps4qgisLink = QLabel('<a href="maps4qgis">Maps4QGIS</a>')
         self.maps4qgisLink.setTextFormat(Qt.TextFormat.RichText)
@@ -3988,11 +4030,30 @@ class LandscapeExplorerDialog(QDialog):
         )
 
         row.addWidget(self.languageButton)
+        row.addWidget(self.manualButton)
         row.addStretch(1)
         row.addWidget(self.maps4qgisLink)
         row.addSpacing(12)
         row.addWidget(self.closeButton)
         return row
+
+    def _open_manual(self):
+        """Open the manual (HTML beside the plugin) in the browser. Its
+        language follows the browser and can be switched in the manual (as
+        in G.S.I. and Fundamental GeoPackage Builder: a URL with
+        #lang=... did not open in the Flatpak QGIS)."""
+        path = os.path.join(os.path.dirname(__file__), MANUAL_FILE)
+        if not os.path.exists(path):
+            QMessageBox.warning(
+                self,
+                self.windowTitle(),
+                tr(
+                    "The manual could not be found.",
+                    "マニュアルが見つかりませんでした。",
+                ),
+            )
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def _apply_font_sizes(self):
         """Sizes measured from the text, once the window is built.
@@ -4085,37 +4146,40 @@ class LandscapeExplorerDialog(QDialog):
         use_plugin_font(box)
         box.setWindowTitle("Maps4QGIS")
         box.setIcon(QMessageBox.Icon.Information)
+        # Rich text, for room between the lines (_spaced_lines).
+        box.setTextFormat(Qt.TextFormat.RichText)
         box.setText(
-            tr(
-                'Make a GeoPDF from the current preview using the '
-                'selected paper size '
-                'and resolution, place it in the analysis ZIP and '
-                'exports folder, '
-                "then open Maps4QGIS in your browser.",
-                "現在のプレビューから、選択中の用紙と解像度でGeoPDFを作成し、"
-                "解析ZIPとexportsフォルダに置いてから、ブラウザでMaps4QGISを開きます。",
-            )
+            _spaced_lines(tr(
+                "Make a GeoPDF with the preview's settings (layers, paper "
+                "and resolution) and open Maps4QGIS in the browser.\n"
+                "The GeoPDF is saved in the ZIP, as the analysis is.",
+                "プレビューの設定（レイヤー・用紙設定・解像度）でGeoPDFを作成し"
+                "ブラウザでMaps4QGISを開きます。\n"
+                "作成したGeoPDFは解析と同様にZIPで保存されます。",
+            ))
         )
         if (manifest.get("outputs") or {}).get("dem_geopdf"):
             box.setInformativeText(
-                tr(
-                    'In Maps4QGIS, open Map Library, choose the GeoPDF '
-                    'from the analysis ZIP, '
-                    'then choose dem_for_geopdf.tif for 3D. You can also '
-                    'open other files.',
-                    "Maps4QGISでは地図管理を開き、解析ZIPのGeoPDFを選び、"
-                    "3D表示にはdem_for_geopdf.tifを選びます。別のファイルも開けます。",
-                )
+                _spaced_lines(tr(
+                    "The GeoPDF in the ZIP can be used as a map with its "
+                    "position. The dem_for_geopdf.tif saved with it is meant "
+                    "as the DEM in Maps4QGIS and Avid Maps Extra. Share the "
+                    "ZIP, or unpack it into a folder, to use them.",
+                    "ZIP内のGeoPDFは位置情報付きマップとして利用できます。"
+                    "また同様に保存されているdem_for_geopdf.tifはdemとして"
+                    "Maps4QGIS、Avid Maps Extraでの利用を想定しています。"
+                    "ZIPは共有やディレクトリに展開して利用してください。",
+                ))
             )
         else:
             box.setInformativeText(
-                tr(
-                    'This analysis has no dem_for_geopdf.tif. You can '
-                    'import the GeoPDF in 2D '
-                    "or choose another DEM.",
-                    "この解析にはdem_for_geopdf.tifがありません。GeoPDFを2Dで取り込むか、"
-                    "別のDEMを選べます。",
-                )
+                _spaced_lines(tr(
+                    "Analyses made with earlier versions have no "
+                    "dem_for_geopdf.tif. Import in 2D, or try choosing a "
+                    "suitable DEM or fetching one automatically.",
+                    "旧バージョンで作成された解析はdem_for_geopdf.tifがありません。"
+                    "2Dで取り込むか、または適切なDEMの選択・自動取得を試してください。",
+                ))
             )
         start = box.addButton(
             tr("Open Maps4QGIS", "Maps4QGISを開く"),
@@ -4144,7 +4208,7 @@ class LandscapeExplorerDialog(QDialog):
             return
         if box.clickedButton() is not start:
             return
-        if not self._confirm_wms_export():
+        if not self._confirm_wms_export() or not self._confirm_field_crs():
             return
         dpi = self._checked_export_dpi(
             self.geoPdfDpiCombo,
@@ -5794,6 +5858,94 @@ class LandscapeExplorerDialog(QDialog):
             QgsSettings().setValue(WMS_EXPORT_NOTICE_HIDDEN_KEY, True)
         return True
 
+    def _field_crs_suggestion(self):
+        """When the preview is in a Mercator CRS (Web Mercator EPSG:3857 and
+        the like): the CRS to suggest for a field map, as text; else "".
+
+        Mercator's units shrink on the ground with the latitude (about 0.82
+        in Japan, 0.62 in the Netherlands), so a GeoPDF in it does not give
+        true distances; Maps4QGIS corrects its 3D at the map's centre only.
+        """
+
+        crs = self.previewCanvas.mapSettings().destinationCrs()
+        if not crs.isValid():
+            return ""
+        try:
+            acronym = crs.projectionAcronym()
+        except AttributeError:
+            acronym = ""
+        if acronym != "merc" and crs.authid() not in MERCATOR_AUTHIDS:
+            return ""
+        centre = self._preview_center84()
+        if centre is None:
+            return ""
+        lon, lat = centre
+        if 122.0 <= lon <= 154.5 and 20.0 <= lat <= 46.5:
+            return tr(
+                "the place's JGD2011 Japan Plane Rectangular CS",
+                "その場所の平面直角座標系（JGD2011）",
+            )
+        zone = min(60, max(1, int((lon + 180.0) // 6) + 1))
+        epsg = (32600 if lat >= 0 else 32700) + zone
+        return tr(
+            "UTM zone {}{} (EPSG:{})",
+            "UTM ゾーン {}{}（EPSG:{}）",
+        ).format(zone, "N" if lat >= 0 else "S", epsg)
+
+    def _confirm_field_crs(self):
+        """Before a GeoPDF (an export, or one for Maps4QGIS): when the
+        preview is in a Mercator CRS, suggest a CRS for a field map. Returns
+        whether to go on."""
+
+        suggestion = self._field_crs_suggestion()
+        if not suggestion or QgsSettings().value(
+            FIELD_CRS_NOTICE_HIDDEN_KEY, False, type=bool
+        ):
+            return True
+        box = QMessageBox(self)
+        use_plugin_font(box)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(
+            tr("The preview is in Mercator", "プレビューがメルカトルです")
+        )
+        box.setText(
+            tr(
+                "The preview is in Mercator ({}).",
+                "プレビューの座標系がメルカトル（{}）です。",
+            ).format(
+                self.previewCanvas.mapSettings().destinationCrs().authid()
+            )
+        )
+        box.setInformativeText(
+            tr(
+                "Distances on the map are longer than on the ground.\n"
+                "About 1.2 times in Japan, 1.6 times at 52° north.\n"
+                "For the field, {} is recommended.\n"
+                "Change the project's CRS and get it into the preview again.",
+                "地図の上の距離が、地上より長くなります。\n"
+                "日本で約1.2倍、北緯52°で約1.6倍です。\n"
+                "現地用には、{}を勧めます。\n"
+                "プロジェクトの座標系を変え、プレビューに取り直してください。",
+            ).format(suggestion)
+        )
+        make = box.addButton(
+            tr("Make it as it is", "このまま作る"),
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(make)
+        hide_next = QCheckBox(
+            tr("Don't show this again", "次回から表示しない"), box
+        )
+        box.setCheckBox(hide_next)
+        _keep_message_lines(box)
+        box.exec()
+        if box.clickedButton() is not make:
+            return False
+        if hide_next.isChecked():
+            QgsSettings().setValue(FIELD_CRS_NOTICE_HIDDEN_KEY, True)
+        return True
+
     def _dem_source_activated(self, *args):
         """The user chose a DEM source in the combo."""
 
@@ -7192,7 +7344,7 @@ class LandscapeExplorerDialog(QDialog):
         # group.
         # Hillshade is multiplied, so its position barely matters; the opaque
         # DEM goes last where it does not cover the others.
-        def add_vector(member_key, style_key, name):
+        def add_vector(member_key, style_key, name, visible=True):
             member = outputs.get(member_key)
             if not member:
                 return
@@ -7212,14 +7364,17 @@ class LandscapeExplorerDialog(QDialog):
             layer.setCustomProperty(OUTPUT_KEY_PROPERTY, member_key)
             project.addMapLayer(layer, False)
             node = terrain_group.addLayer(layer)
-            node.setItemVisibilityChecked(True)
+            node.setItemVisibilityChecked(visible)
             node.setExpanded(False)
 
         # Lines above the rasters: catchments, then contours.
         add_vector(
             "watershed", "watershed_style", tr("Catchments", "流域範囲")
         )
-        add_vector("contours", "contours_style", tr("Contours", "等高線"))
+        # Contours come out hidden (shown when wanted).
+        add_vector(
+            "contours", "contours_style", tr("Contours", "等高線"), False
+        )
         add(
             "slope",
             tr("Slope", "傾斜"),
@@ -8028,6 +8183,9 @@ LARGE_EXPORT_PIXELS = 60_000_000
 # Field map app (PWA) that opens the GeoPDF export; the overview page links
 # on to the app itself (https://avid.mokuren.ne.jp/fieldmap/).
 AVID_MAPS_URL = "https://avid.mokuren.ne.jp/avidmaps/system_overview.php"
+# The manual beside the plugin's files (the button at the right of the
+# language button).
+MANUAL_FILE = "manual_quick_landscape_analysis_explorer.html"
 
 
 def _style_without_custom_properties():
@@ -8047,6 +8205,9 @@ def _style_without_custom_properties():
 # The one print layout the plugin keeps (each analysis replaces it).
 TERRARIUM_NOTICE_HIDDEN_KEY = "qlae/terrarium_notice_hidden"
 WMS_EXPORT_NOTICE_HIDDEN_KEY = "qlae/wms_export_notice_hidden"
+FIELD_CRS_NOTICE_HIDDEN_KEY = "qlae/field_crs_notice_hidden"
+# Mercator CRSs also told by their code (projectionAcronym() is "merc").
+MERCATOR_AUTHIDS = ("EPSG:3857", "EPSG:3395", "EPSG:900913", "EPSG:3785")
 WINDOW_GEOMETRY_KEY = "qlae/window_geometry"
 WINDOW_MAXIMIZED_KEY = "qlae/window_maximized"
 
@@ -8072,6 +8233,8 @@ _IMAGE_EXTENSIONS = {
     "TIF": (".tif", ".tiff"),
 }
 IMAGE_FORMAT_KEY = "qlae/image_format"
+# The analysis checks as last chosen (+ the output key, or "regional").
+ANALYSIS_CHECK_KEY = "qlae/analysis_check/"
 
 
 def _stored_image_format():
@@ -9767,6 +9930,14 @@ def _extract_analysis_files(package_path, manifest, folder):
     return written
 
 
+def _spaced_lines(text):
+    """Plain text as rich text with room between the lines (1.5 times), for
+    a QMessageBox set to rich text."""
+
+    lines = "<br>".join(html.escape(line) for line in text.split("\n"))
+    return '<p style="line-height:150%">{}</p>'.format(lines)
+
+
 def _keep_message_lines(box):
     """Keep each line of a QMessageBox's text on one line.
 
@@ -9817,6 +9988,8 @@ def _shown_in_layer_panel(layer):
 _TERRAIN_MESSAGES_JA = {
     "Preparing the kept DEM tiles...": "保存してあるDEMのタイルを準備しています…",
     "Regional analysis...": "地域の解析をしています…",
+    "Creating CS Valley...": "CS Valleyを作成しています…",
+    "Creating the valley flow...": "沢の成立を作成しています…",
     "Preparing DEM...": "DEMを準備しています…",
     "Creating hillshade...": "陰影起伏を作成しています…",
     "Creating slope...": "傾斜を作成しています…",
@@ -10164,6 +10337,8 @@ def _regional_text(manifest):
         "filled_dem": tr("the DEM with its holes filled", "DEM（穴埋め）"),
         "gmm": tr("the geomorphological map", "地形分類図"),
         "prefetch": tr("the regional data", "地域のデータ"),
+        "cs_valley": tr("the CS Valley", "CS Valley"),
+        "valley_flow": tr("the valley flow", "沢の成立"),
     }
     for key, error in (regional.get("errors") or {}).items():
         text += "\n" + tr(

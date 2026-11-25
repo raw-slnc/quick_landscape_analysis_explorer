@@ -5,43 +5,12 @@
   compute_slope_deg  : Horn法で傾斜角[度]を計算
   compute_hillshade  : 陰影起伏（0-255）を計算
   compute_curvature  : 平均曲率（ラプラシアン）を計算
-  compute_shc        : SHC = 曲率の局所標準偏差（FOP用）
-  d8_flow_direction  : D8流向コードを返す
-  flow_accumulation  : 上流集水セル数を累積（D8）
-  mfd_proportions    : MFD（多方向）の分配率 (rows,cols,8) を返す
-  dinf_proportions   : D∞（Tarboton）の分配率 (rows,cols,8) を返す
-  multi_flow_accumulation : 分配率から上流集水を累積（MFD/D∞ 共通）
-  compute_twi        : TWI = ln(A / tan(β))
-  stability_fs       : 無限斜面安定解析（FS）
-  rational_flow      : 合理式による流量推測 [m³/s]
-  cum_travel_time_to_outlet : 各セル→出口の累積移動時間（時間‐面積法の基準）
-  triangular_hyetograph     : 三角形の設計ハイエトグラフ
-  time_area_flow_metrics    : 時間‐面積法/Clark 単位図法による負荷3指標
+
+流れの計算は terrain/catchment_grid.py（流域）と terrain/valley_flow.py
+（沢の成立）にある。
 """
 
 import numpy as np
-
-# セルごとの Python ループで progress_cb を呼ぶ間隔（セル数）。
-# 一番重い MFD の累積（約8µs/セル）でも 0.15秒ほどに1回になる。
-_PROGRESS_EVERY = 16384
-
-FLOW_MODEL_VERSION = "time-area-clark-d8-canopy-2"
-FLOW_ROUTING_OPTIONS = {"clark_k": 0.75, "n_time": 24}
-FLOW_CANOPY_COEFFICIENTS = {
-    "c_forest": 0.15,
-    "c_bare": 0.55,
-    "v_forest": 0.30,
-    "v_bare": 0.60,
-    "cs_forest": 10.0,
-    "cs_bare": 3.0,
-}
-
-
-def _sub_progress(progress_cb, lo, hi):
-    """progress_cb の 0..1 を lo..hi に割り当てた callback を返す（None は None）。"""
-    if progress_cb is None:
-        return None
-    return lambda frac: progress_cb(lo + (hi - lo) * frac)
 
 
 def compute_slope_deg(dem, cell_size):
