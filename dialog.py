@@ -3781,20 +3781,30 @@ class LandscapeExplorerDialog(QDialog):
             )
 
     def _update_regional_option(self, *args):
-        """Offer the regional analysis of the country at the preview centre
-        (the region shown at the top of the window), when it has one."""
+        """Offer the regional analysis for the chosen DEM's country, or the
+        country at the preview centre when the source has no country."""
         del args
         option = None
         centre = self._preview_center84()
         if centre is not None and not self._in_management():
-            # A country's own outline first (finer at its borders than
-            # QGIS's world map), then the world map.
-            code = country_by_outline(*centre)
+            # The preview centre can be offshore while a regional DEM still
+            # covers land in the view. The chosen source identifies the
+            # country of that analysis in this case.
+            code = (
+                dem_sources.country_for(self._effective_source_key())
+                if self._dem_source_available()
+                else None
+            )
             if code is None:
-                found = world_country.country_at(*centre)
-                code = found[0] if found else None
+                # A country's own outline is finer at its borders than
+                # QGIS's world map.
+                code = country_by_outline(*centre)
+                if code is None:
+                    found = world_country.country_at(*centre)
+                    code = found[0] if found else None
             option = sources.regional_option(code) if code else None
         if option is self._regionalOption:
+            self._update_regional_enabled()
             return
         self._regionalOption = option
         check = self.regionalCheck
@@ -5756,7 +5766,8 @@ class LandscapeExplorerDialog(QDialog):
             note = item.toolTip() if item is not None else note
         self.demSourceNote.setText(note)
         self._update_region_label()
-        self._update_regional_enabled()
+        if hasattr(self, "regionalCheck"):
+            self._update_regional_option()
         # Remember the source before this change, to go back to it when the
         # Terrarium notice is not accepted.
         self._demSourceBeforeChange = getattr(self, "_demSourceCurrent", None)

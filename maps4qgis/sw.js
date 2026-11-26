@@ -1,4 +1,4 @@
-const CACHE_NAME = 'maps4qgis-0.1.0-r2';
+const CACHE_NAME = 'maps4qgis-0.1.0-r3';
 const APP_SHELL_ASSETS = [
   './index.html',
   './app-en.html',

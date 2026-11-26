@@ -1128,7 +1128,7 @@
 
         <section class="drawer-section">
           <h3>Backup</h3>
-          <div class="drawer-note">保存済みの地図・DEM・フラグ・軌跡をまとめて1つのファイルに書き出します。復元は上の「保存データから復元」から行います。</div>
+          <div class="drawer-note">保存済みの地図・DEM・フラグ・軌跡をまとめて1つのファイルに書き出します。対応ブラウザでは保存先を選べます。その他はブラウザのダウンロード設定に従います。復元は上の「保存データから復元」から行います。</div>
           <div class="drawer-actions">
             <button class="drawer-btn" id="btnExportBackup" type="button">バックアップ書き出し</button>
           </div>
@@ -1168,7 +1168,7 @@
               <li>HTTPS required — Geolocation API browser requirement.</li>
               <li>GPS accuracy: ±3–15 m outdoors (open sky).</li>
               <li>Compass accuracy: ±5–30° — subject to device quality and magnetic interference.</li>
-              <li>Backup exports are saved to a browser-managed location on the device. On Android, they often appear in Downloads or a similar folder, but the exact location may vary by browser and device settings.</li>
+              <li>Backup exports use the selected save location when the browser supports it. Otherwise they use the browser's download settings. On Android, they often appear in Downloads or a similar folder.</li>
             </ul>
           </section>
           <section class="drawer-section" style="margin-top:14px;">
@@ -1202,7 +1202,7 @@
               <li>HTTPS必須 — ブラウザのGeolocation API要件。</li>
               <li>GPS精度：屋外開空時 ±3〜15m。</li>
               <li>コンパス精度：±5〜30°（端末品質・磁気干渉に依存）。</li>
-              <li>バックアップ書き出し先はブラウザ側の保存先設定に従います。Android では「ダウンロード」などに保存されることが多いですが、実際の保存場所は端末やブラウザ設定によって異なる場合があります。</li>
+              <li>対応ブラウザではバックアップの保存先を選べます。その他はブラウザのダウンロード設定に従います。Android では「ダウンロード」などに保存されることが多いです。</li>
             </ul>
           </section>
           <section class="drawer-section" style="margin-top:14px;">
@@ -1261,10 +1261,112 @@
 
   <input id="fileGeoPdf" type="file" accept="application/pdf" class="drawer-hidden">
   <input id="fileDem" type="file" accept=".tif,.tiff" class="drawer-hidden">
-  <input id="fileBackupRestore" type="file" accept="application/json,.json" class="drawer-hidden">
+  <input id="fileBackupRestore" type="file" accept=".m4qbackup,application/json,.json" class="drawer-hidden">
 
   <script src="leaflet.min.js"></script>
   <script src="wmmhr.js"></script>
+  <script>
+// Binary backup v3 keeps map images and DEMs out of large JavaScript strings.
+globalThis.Maps4QGISBackup = (() => {
+  const MAGIC = new TextEncoder().encode('MAPS4QGIS-BACKUP\n');
+  const MAX_HEADER_BYTES = 64 * 1024 * 1024;
+
+  function prepare(records, state) {
+    const maps = records.map(record => {
+      if (!(record.imageBlob instanceof Blob)) {
+        throw new Error('A saved map has no image.');
+      }
+      const entry = {
+        id: record.id,
+        title: record.title,
+        corners: record.corners,
+        createdAt: record.createdAt,
+        sourceFileName: record.sourceFileName,
+        sourceScaleDenominator: record.sourceScaleDenominator ?? null,
+        importQuality: record.importQuality,
+        imageWidth: record.imageWidth ?? null,
+        imageHeight: record.imageHeight ?? null,
+        targetLongEdge: record.targetLongEdge ?? null,
+        imageByteLength: record.imageBlob.size,
+        imageMimeType: record.imageBlob.type || 'image/png',
+        demByteLength: record.demBlob?.size ?? 0
+      };
+      if (record.demBlob) {
+        entry.demSourceFileName = record.demSourceFileName || '';
+        entry.demMimeType = record.demMimeType || record.demBlob.type || 'image/tiff';
+        entry.demSize = record.demSize ?? record.demBlob.size;
+        entry.demStoredAt = record.demStoredAt ?? null;
+        entry.demMetadata = record.demMetadata ?? null;
+        entry.demCompatibility = record.demCompatibility ?? null;
+        entry.demImportStatus = record.demImportStatus || 'stored';
+        entry.demAutoSource = record.demAutoSource ?? null;
+      }
+      return entry;
+    });
+    const header = {
+      format: 'fieldmap-backup',
+      version: 3,
+      exportedAt: new Date().toISOString(),
+      maps,
+      settings: state.settings,
+      fieldLog: state.fieldLog
+    };
+    const headerBytes = new TextEncoder().encode(JSON.stringify(header));
+    if (headerBytes.byteLength > MAX_HEADER_BYTES) {
+      throw new Error('Backup metadata is too large.');
+    }
+    const prefix = new Uint8Array(MAGIC.length + 4);
+    prefix.set(MAGIC);
+    new DataView(prefix.buffer).setUint32(MAGIC.length, headerBytes.length, true);
+    const parts = [prefix, headerBytes];
+    for (const record of records) {
+      parts.push(record.imageBlob);
+      if (record.demBlob) parts.push(record.demBlob);
+    }
+    return parts;
+  }
+
+  async function read(file) {
+    const prefixSize = MAGIC.length + 4;
+    if (file.size < prefixSize) return null;
+    const prefix = new Uint8Array(await file.slice(0, prefixSize).arrayBuffer());
+    if (!MAGIC.every((byte, index) => prefix[index] === byte)) return null;
+    const headerLength = new DataView(prefix.buffer).getUint32(MAGIC.length, true);
+    if (!headerLength || headerLength > MAX_HEADER_BYTES || prefixSize + headerLength > file.size) {
+      throw new Error('Invalid backup header.');
+    }
+    const header = JSON.parse(await file.slice(prefixSize, prefixSize + headerLength).text());
+    if (header?.format !== 'fieldmap-backup' || header.version !== 3 || !Array.isArray(header.maps)) {
+      throw new Error('Unsupported backup format.');
+    }
+    let offset = prefixSize + headerLength;
+    const maps = header.maps.map(source => {
+      const imageSize = source?.imageByteLength;
+      const demSize = source?.demByteLength;
+      if (!source?.id || !source.title || !source.corners
+        || !Number.isSafeInteger(imageSize) || imageSize < 1
+        || !Number.isSafeInteger(demSize) || demSize < 0
+        || imageSize > file.size - offset || demSize > file.size - offset - imageSize) {
+        throw new Error('Invalid backup map data.');
+      }
+      const record = {
+        ...source,
+        imageBlob: file.slice(offset, offset + imageSize, source.imageMimeType || 'image/png')
+      };
+      offset += imageSize;
+      if (demSize) {
+        record.demBlob = file.slice(offset, offset + demSize, source.demMimeType || 'image/tiff');
+        offset += demSize;
+      }
+      return record;
+    });
+    if (offset !== file.size) throw new Error('Invalid backup size.');
+    return { ...header, maps };
+  }
+
+  return { prepare, read };
+})();
+  </script>
   <script>
     const DEFAULT_MAP_ID = 'default';
     const STORAGE_DB_NAME = 'fieldmap-storage';
@@ -1278,7 +1380,7 @@
     const IMPORT_ASSET_URLS = ['./pdf.mjs', './pdf.worker.mjs', './proj4.js', './datums.json'];
     const FIELD_LOG_KEY = 'fieldLog';
     const BACKUP_FORMAT = 'fieldmap-backup';
-    const BACKUP_VERSION = 2;
+    const BACKUP_VERSION = 3;
     const TRACK_MIN_DISTANCE_M = 5;
     const TRACK_MIN_INTERVAL_MS = 10000;
     const TRACK_MAX_ACCURACY_M = 50;
@@ -1829,15 +1931,6 @@
       return record ? record.value : fallback;
     }
 
-    function blobToDataUrl(blob) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(reader.error || new Error('Blobの読み込みに失敗しました。'));
-        reader.readAsDataURL(blob);
-      });
-    }
-
     function dataUrlToBlob(dataUrl) {
       const match = String(dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
       if (!match) throw new Error('保存データ内の画像形式が不正です。');
@@ -1851,51 +1944,6 @@
       return new Blob([bytes], { type: mimeType });
     }
 
-    async function buildBackupPayload() {
-      const maps = await Promise.all(storedMaps.map(async record => {
-        const entry = {
-          id: record.id,
-          title: record.title,
-          corners: record.corners,
-          createdAt: record.createdAt,
-          sourceFileName: record.sourceFileName,
-          sourceScaleDenominator: record.sourceScaleDenominator ?? null,
-          importQuality: record.importQuality,
-          imageWidth: record.imageWidth ?? null,
-          imageHeight: record.imageHeight ?? null,
-          targetLongEdge: record.targetLongEdge ?? null,
-          imageData: await blobToDataUrl(record.imageBlob)
-        };
-        if (record.demBlob) {
-          entry.demSourceFileName = record.demSourceFileName || '';
-          entry.demMimeType = record.demMimeType || 'image/tiff';
-          entry.demSize = record.demSize ?? record.demBlob.size ?? null;
-          entry.demStoredAt = record.demStoredAt ?? null;
-          entry.demMetadata = record.demMetadata ?? null;
-          entry.demCompatibility = record.demCompatibility ?? null;
-          entry.demImportStatus = record.demImportStatus || 'stored';
-          entry.demAutoSource = record.demAutoSource ?? null;
-          entry.demData = await blobToDataUrl(record.demBlob);
-        }
-        return entry;
-      }));
-
-      return {
-        format: BACKUP_FORMAT,
-        version: BACKUP_VERSION,
-        exportedAt: new Date().toISOString(),
-        maps,
-        settings: {
-          activeMapId: currentActiveMapId,
-          importQuality: selectedImportQuality
-        },
-        fieldLog: {
-          waypoints: fieldWaypoints,
-          trackPoints: fieldTrackPoints
-        }
-      };
-    }
-
     function defaultBackupBaseName() {
       const now = new Date();
       const pad = value => String(value).padStart(2, '0');
@@ -1906,20 +1954,50 @@
 
     function sanitizeBackupFileName(input) {
       const name = String(input || '')
-        .replace(/\.json$/i, '')
+        .replace(/\.(?:m4qbackup|json)$/i, '')
         .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
         .trim();
-      return name ? `${name}.json` : '';
+      return name ? `${name}.m4qbackup` : '';
     }
 
     async function exportCurrentStateBackup() {
-      const input = window.prompt('バックアップのファイル名', defaultBackupBaseName());
-      if (input === null) return false;
-      const fileName = sanitizeBackupFileName(input) || `${defaultBackupBaseName()}.json`;
+      const suggestedName = sanitizeBackupFileName(defaultBackupBaseName());
+      let handle = null;
+      let fileName = suggestedName;
+      if (typeof window.showSaveFilePicker === 'function') {
+        try {
+          handle = await window.showSaveFilePicker({
+            suggestedName,
+            types: [{ description: 'Maps4QGIS backup', accept: { 'application/octet-stream': ['.m4qbackup'] } }]
+          });
+        } catch (err) {
+          if (err.name === 'AbortError') return false;
+          throw err;
+        }
+      } else {
+        const input = window.prompt('バックアップのファイル名（保存先はブラウザのダウンロード設定に従います）', defaultBackupBaseName());
+        if (input === null) return false;
+        fileName = sanitizeBackupFileName(input) || suggestedName;
+      }
       showImportProgress('保存データを書き出しています...');
-      const payload = await buildBackupPayload();
-      const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
+      const parts = Maps4QGISBackup.prepare(storedMaps, {
+        settings: { activeMapId: currentActiveMapId, importQuality: selectedImportQuality },
+        fieldLog: { waypoints: fieldWaypoints, trackPoints: fieldTrackPoints }
+      });
+      if (handle) {
+        const writable = await handle.createWritable();
+        try {
+          for (const part of parts) await writable.write(part);
+          await writable.close();
+        } catch (err) {
+          try { await writable.abort(); } catch (_) {}
+          throw err;
+        }
+        showImportProgress('保存データを書き出しました。');
+        showGPSNotice('保存データを書き出しました。');
+        return true;
+      }
+      const url = URL.createObjectURL(new Blob(parts, { type: 'application/octet-stream' }));
       const link = document.createElement('a');
       link.href = url;
       link.download = fileName;
@@ -1927,8 +2005,8 @@
       link.click();
       link.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      showImportProgress('保存データを書き出しました。');
-      showGPSNotice('保存データを書き出しました。');
+      showImportProgress('バックアップのダウンロードを開始しました。');
+      showGPSNotice('バックアップのダウンロードを開始しました。');
       return true;
     }
 
@@ -1951,7 +2029,7 @@
       const backupMaps = Array.isArray(payload.maps) ? payload.maps : [];
       for (let index = 0; index < backupMaps.length; index++) {
         const source = backupMaps[index];
-        if (!source || !source.id || !source.title || !source.corners || !source.imageData) {
+        if (!source || !source.id || !source.title || !source.corners || (!source.imageData && !source.imageBlob)) {
           continue;
         }
         showImportProgress(`保存データを復元しています... (${index + 1}/${backupMaps.length})`);
@@ -1963,12 +2041,12 @@
           sourceFileName: source.sourceFileName || '',
           sourceScaleDenominator: source.sourceScaleDenominator ?? null,
           importQuality: normalizeImportQuality(source.importQuality),
-          imageBlob: dataUrlToBlob(source.imageData),
+          imageBlob: source.imageBlob || dataUrlToBlob(source.imageData),
           imageWidth: source.imageWidth ?? null,
           imageHeight: source.imageHeight ?? null,
           targetLongEdge: source.targetLongEdge ?? null
         };
-        if (source.demData) {
+        if (source.demData || source.demBlob) {
           record.demSourceFileName = source.demSourceFileName || '';
           record.demMimeType = source.demMimeType || 'image/tiff';
           record.demSize = source.demSize ?? null;
@@ -1977,7 +2055,7 @@
           record.demCompatibility = source.demCompatibility ?? null;
           record.demImportStatus = source.demImportStatus || 'stored';
           record.demAutoSource = source.demAutoSource ?? null;
-          record.demBlob = dataUrlToBlob(source.demData);
+          record.demBlob = source.demBlob || dataUrlToBlob(source.demData);
         }
         await dbPut(MAPS_STORE, record);
         restoredMaps.push(record);
@@ -2010,9 +2088,13 @@
 
     async function restoreBackupFile(file) {
       if (!file) return;
-      const text = await file.text();
-      const payload = JSON.parse(text);
-      await restoreBackupPayload(payload);
+      const binary = await Maps4QGISBackup.read(file);
+      if (binary) {
+        await restoreBackupPayload(binary);
+      } else {
+        const text = await file.text();
+        await restoreBackupPayload(JSON.parse(text));
+      }
     }
 
     function revokeCurrentObjectUrl() {
@@ -2998,10 +3080,10 @@
     }
 
     // 変換が終わった後、取込画面のメッセージ（DEM・測地系・メルカトルなど）を読めるよう、
-    // 文の長さに合わせた時間（約1.9〜7.5 秒）待ってから閉じる
+    // 文の長さに合わせた時間（約0.47〜1.9 秒）待ってから閉じる
     function waitForImportMessage() {
       const text = document.getElementById('importFlowProgress')?.textContent || '';
-      const ms = Math.min(7500, Math.max(1875, 1125 + text.length * 22.5));
+      const ms = Math.min(1875, Math.max(468.75, 281.25 + text.length * 5.625));
       return new Promise(resolve => setTimeout(resolve, ms));
     }
 
@@ -3430,6 +3512,10 @@
       resetImportDrawerTransform();
       drawer.classList.remove('visible');
       drawer.setAttribute('aria-hidden', 'true');
+      const mapView = terrain3dActive
+        ? document.getElementById('terrain3dCanvas')
+        : (map?.getContainer() || document.getElementById('map'));
+      mapView.focus({ preventScroll: true });
       if (maps4qgisSession && !selectedGeoPdfFile && !['done', 'backup', 'backup-choice'].includes(maps4qgisStep)) {
         maps4qgisStep = 'drawer';
         updateMaps4QGISGuide();
