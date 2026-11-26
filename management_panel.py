@@ -49,9 +49,6 @@ EXCLUSIVE_OUTPUTS = (
 # When both of such a pair are shown in the layer panel, analysis management
 # starts with these unticked (the slope is kept, not the CS Map).
 UNTICKED_FIRST = ("cs_map",)
-# Ticking a layer of the first role ticks the basic outputs listed, when they
-# are off (the CS Valley is read over the slope).
-TICKED_WITH = {"cs_valley": ("slope",)}
 # Widths of the basic and the regional columns.
 BASIC_STRETCH, REGIONAL_STRETCH = 4, 5
 
@@ -428,7 +425,6 @@ class AnalysisManagementPanel(QWidget):
             return
         if item.checkState(0) == Qt.CheckState.Checked:
             self._untick_excluded(item.data(0, _LAYER_ID_ROLE))
-            self._tick_companions(item.data(0, _LAYER_ID_ROLE))
         self.layersChanged.emit()
 
     def _mark_exclusive_pairs(self):
@@ -506,31 +502,6 @@ class AnalysisManagementPanel(QWidget):
                         item.setCheckState(0, Qt.CheckState.Unchecked)
         finally:
             self._updating = False
-
-    def _tick_companions(self, layer_id):
-        ('Ticking a layer ticks the basic outputs it is read with '
-         '(TICKED_WITH), when they are off.')
-        from qgis.core import QgsProject
-
-        project = QgsProject.instance()
-        ticked = project.mapLayer(layer_id)
-        wanted = TICKED_WITH.get(_role(ticked), ()) if ticked else ()
-        if not wanted:
-            return
-        for tree in (self.layerTree, self.regionalTree):
-            for item in self._layer_items(tree.invisibleRootItem()):
-                other = project.mapLayer(item.data(0, _LAYER_ID_ROLE))
-                if (
-                    other is not None
-                    and other.customProperty(OUTPUT_KEY_PROPERTY) in wanted
-                    and item.checkState(0) != Qt.CheckState.Checked
-                ):
-                    self._updating = True
-                    try:
-                        item.setCheckState(0, Qt.CheckState.Checked)
-                    finally:
-                        self._updating = False
-                    self._untick_excluded(other.id())
 
     def _layer_items(self, parent):
         for index in range(parent.childCount()):
