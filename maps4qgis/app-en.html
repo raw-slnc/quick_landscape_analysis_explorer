@@ -3150,8 +3150,15 @@ globalThis.Maps4QGISBackup = (() => {
           updateMaps4QGISGuide();
         });
         actions.append(backup, finish);
+        actions.addEventListener('keydown', event => {
+          if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+          if (event.target !== backup && event.target !== finish) return;
+          event.preventDefault();
+          (event.target === backup ? finish : backup).focus({ preventScroll: true });
+        });
         guide.replaceChildren(message, actions, option);
         guide.hidden = false;
+        backup.focus({ preventScroll: true });
         return;
       }
       guide.classList.toggle('choice', maps4qgisStep === 'backup');
@@ -3189,9 +3196,36 @@ globalThis.Maps4QGISBackup = (() => {
       guide.hidden = false;
       const target = document.getElementById(id);
       target?.classList.add('maps4qgis-pulse');
+      if (maps4qgisStep === 'backup' && target && !target.disabled && target.getClientRects().length) {
+        target.focus({ preventScroll: true });
+      }
       if (maps4qgisStep === 'backup' && id === 'btnExportBackup') {
         target?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       }
+    }
+
+    function handleMaps4QGISGuideEnter(event) {
+      if (event.key !== 'Enter' || event.repeat || event.isComposing
+          || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+          || !maps4qgisSession || ['backup-choice', 'backup', 'done'].includes(maps4qgisStep)) return;
+      const picker = document.getElementById('maps4qgisZipPicker');
+      const guide = document.getElementById('maps4qgisGuide');
+      let target = null;
+      if (!picker.hidden) {
+        target = event.target?.closest?.('#maps4qgisZipFiles button:not(:disabled)')
+          || picker.querySelector('#maps4qgisZipFiles button:not(:disabled)');
+      } else if (!guide.hidden) {
+        target = Array.from(document.querySelectorAll('.maps4qgis-pulse'))
+          .find(button => !button.closest('#maps4qgisZipFiles'));
+      }
+      if (!target || target.disabled || !target.getClientRects().length) return;
+      const focusedControl = event.target?.closest?.(
+        'button, input, select, textarea, a[href], [role="button"], [role="tab"], [role="radio"], [contenteditable="true"]'
+      );
+      if (focusedControl && focusedControl !== target) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      target.click();
     }
 
     function closeMaps4QGISPicker() {
@@ -3260,6 +3294,7 @@ globalThis.Maps4QGISBackup = (() => {
         input.value = '';
         input.click();
       });
+      document.addEventListener('keydown', handleMaps4QGISGuideEnter, true);
       if (document.getElementById('importDrawer').classList.contains('visible')) {
         maps4qgisStep = drawerTab === 'library' ? 'import' : 'library';
       }
