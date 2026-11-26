@@ -418,8 +418,10 @@ Copyright (C) 2026 Hideharu Masai
 - The slope colour classes and the r.watershed settings for catchments (MFD,
   convergence 5) are taken from the original MORIZON (もりぞん), the forest
   zoning support tool of the Forestry Agency of Japan (Copyright (C) 2021
-  MIERUNE Inc.); no code is taken from it for the catchments. This plugin
+  MIERUNE Inc.); no code of the original MORIZON is used. This plugin
   is not made or endorsed by its authors.
+- CS立体図 (CS Map) is a terrain visualization method proposed by Nagano
+  Prefecture Forestry Research Center.
 - Parts reused from the author's own plugins:
   - Forestry Operations Lite: the terrain derivatives and the CS Map
     (`terrain/analysis.py`, `terrain/cs_map.py`), DEM loading and fetching
